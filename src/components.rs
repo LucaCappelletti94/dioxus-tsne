@@ -14,6 +14,15 @@ use crate::worker::DecompositionWorker;
 /// Longest legend rendered before truncation.
 const MAX_LEGEND_ENTRIES: usize = 20;
 
+/// A bundled example dataset offered by the explorer through a load button.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExampleDataset {
+    /// Human readable name shown on the button.
+    pub name: String,
+    /// URL the file is served from, any supported format.
+    pub url: String,
+}
+
 /// The main decomposition UI: load a tabular file, run a decomposition in the
 /// worker, follow its progress on the animated scatter plot and colorize the
 /// points by label columns, pasted values or a dropped single column file.
@@ -23,13 +32,12 @@ const MAX_LEGEND_ENTRIES: usize = 20;
 /// * `worker_url` - URL of the wasm-bindgen `--target web` JS output of the
 ///   worker binary registering [`DecompositionWorker`], see the crate level
 ///   documentation.
-/// * `example_url` - optional URL of an example dataset (any supported
-///   format). When set, a load button offers it so visitors can try the
-///   explorer with a single click.
+/// * `examples` - bundled example datasets, one load button each, so visitors
+///   can try the explorer with a single click.
 #[component]
 pub fn DecompositionExplorer(
     worker_url: String,
-    #[props(default)] example_url: Option<String>,
+    #[props(default)] examples: Vec<ExampleDataset>,
 ) -> Element {
     let mut dataset = use_signal(|| None::<Dataset>);
     let mut ingest_error = use_signal(|| None::<String>);
@@ -198,35 +206,39 @@ pub fn DecompositionExplorer(
                     }
                 },
             }
-            if let Some(url) = example_url {
+            for (index, example) in examples.iter().enumerate() {
                 button {
-                    id: "load-example",
-                    onclick: move |_| {
-                        let url = url.clone();
-                        async move {
-                            let fetched = match gloo_net::http::Request::get(&url).send().await {
-                                Ok(response) => response.binary().await,
-                                Err(error) => Err(error),
-                            };
-                            match fetched {
-                                Ok(bytes) => match parse_dataset(&url, &bytes) {
-                                    Ok(parsed) => {
-                                        ingest_error.set(None);
-                                        dataset.set(Some(parsed));
-                                    }
+                    id: "load-example-{index}",
+                    onclick: {
+                        let url = example.url.clone();
+                        move |_| {
+                            let url = url.clone();
+                            async move {
+                                let fetched = match gloo_net::http::Request::get(&url).send().await
+                                {
+                                    Ok(response) => response.binary().await,
+                                    Err(error) => Err(error),
+                                };
+                                match fetched {
+                                    Ok(bytes) => match parse_dataset(&url, &bytes) {
+                                        Ok(parsed) => {
+                                            ingest_error.set(None);
+                                            dataset.set(Some(parsed));
+                                        }
+                                        Err(error) => {
+                                            dataset.set(None);
+                                            ingest_error.set(Some(error.to_string()));
+                                        }
+                                    },
                                     Err(error) => {
                                         dataset.set(None);
                                         ingest_error.set(Some(error.to_string()));
                                     }
-                                },
-                                Err(error) => {
-                                    dataset.set(None);
-                                    ingest_error.set(Some(error.to_string()));
                                 }
                             }
                         }
                     },
-                    "Load example dataset"
+                    "Load {example.name}"
                 }
             }
             if let Some(parsed) = dataset.read().as_ref() {

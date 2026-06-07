@@ -41,7 +41,7 @@ mod plot;
 mod worker;
 
 pub use color::{ColorScale, Coloring, LegendEntry, colorize};
-pub use components::DecompositionExplorer;
+pub use components::{DecompositionExplorer, ExampleDataset};
 pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};

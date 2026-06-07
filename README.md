@@ -23,4 +23,7 @@ dx serve -p decompositions-app   # build and serve the app
 
 The worker bundle is not rebuilt by `dx serve`, rerun the script after changing the worker or the library compute code. The worker bundle must exist before the app compiles, since the app registers it as a folder asset.
 
-The app ships a bundled example, a 1000 digit MNIST subsample reduced to 50 PCA dimensions: click "Load example dataset", then "Run", then color by the digit column to see the classic t-SNE digit clusters without bringing your own file.
+The app ships two bundled examples loadable with one click, so you can try the full flow without bringing your own file:
+
+- MNIST digits (1000 samples, already reduced to 50 PCA dimensions): run and color by the digit column to see the classic t-SNE digit clusters.
+- Cora papers (2708 samples, the raw 1433 binary bag of words features): exercises the in-worker PCA preprocessing down to 50 dimensions before t-SNE, color by the subject column. The features alone separate the seven subjects only partially, which is the honest result without the citation graph.
