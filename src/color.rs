@@ -31,6 +31,10 @@ const MISSING: &str = "#999999";
 /// distinct colors lets the plot batch points per color.
 const LEVELS: usize = 64;
 
+/// All-integer value sets with at most this many distinct values are treated
+/// as categories (class indices) rather than as a continuous scale.
+const MAX_INTEGER_CATEGORIES: usize = 10;
+
 /// How a set of values was mapped to colors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColorScale {
@@ -80,7 +84,9 @@ fn viridis(t: f32) -> String {
 ///
 /// Continuous when every trimmed value parses as a float: finite values are
 /// normalized to the data range and quantized onto [`LEVELS`] viridis colors,
-/// non finite ones get a grey. Categorical otherwise: distinct values in
+/// non finite ones get a grey. Exception: all-integer sets with at most
+/// [`MAX_INTEGER_CATEGORIES`] distinct values are class indices and map to
+/// the palette in ascending order. Categorical otherwise: distinct values in
 /// first appearance order, palette cycled beyond its size.
 pub fn colorize(values: &[String]) -> Coloring {
     if values.is_empty() {
@@ -98,6 +104,36 @@ pub fn colorize(values: &[String]) -> Coloring {
 
     match parsed {
         Some(numbers) => {
+            // Small sets of integers (class indices, MNIST digits) are
+            // categories, not a gradient: palette in ascending order.
+            if numbers.iter().all(|v| v.is_finite() && v.fract() == 0.0) {
+                let mut distinct: Vec<i64> = numbers.iter().map(|&v| v as i64).collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                if distinct.len() <= MAX_INTEGER_CATEGORIES {
+                    let colors = numbers
+                        .iter()
+                        .map(|&v| {
+                            let rank = distinct.binary_search(&(v as i64)).unwrap();
+                            String::from(PALETTE[rank % PALETTE.len()])
+                        })
+                        .collect();
+                    let legend = distinct
+                        .iter()
+                        .enumerate()
+                        .map(|(rank, value)| LegendEntry {
+                            label: value.to_string(),
+                            color: String::from(PALETTE[rank % PALETTE.len()]),
+                        })
+                        .collect();
+                    return Coloring {
+                        colors,
+                        legend,
+                        scale: ColorScale::Categorical,
+                    };
+                }
+            }
+
             let finite: Vec<f32> = numbers.iter().copied().filter(|v| v.is_finite()).collect();
             let min = finite.iter().copied().fold(f32::MAX, f32::min);
             let max = finite.iter().copied().fold(f32::MIN, f32::max);
@@ -201,7 +237,7 @@ mod tests {
 
     #[test]
     fn numeric_values_use_the_continuous_scale() {
-        let coloring = colorize(&strings(&["0.0", "5.0", "10.0"]));
+        let coloring = colorize(&strings(&["0.5", "5.0", "10.5"]));
 
         assert_eq!(coloring.scale, ColorScale::Continuous);
         assert_eq!(coloring.colors[0], viridis(0.0));
@@ -210,8 +246,30 @@ mod tests {
         assert_ne!(coloring.colors[1], coloring.colors[2]);
 
         assert_eq!(coloring.legend.len(), 2);
-        assert_eq!(coloring.legend[0].label, "0");
-        assert_eq!(coloring.legend[1].label, "10");
+        assert_eq!(coloring.legend[0].label, "0.5");
+        assert_eq!(coloring.legend[1].label, "10.5");
+    }
+
+    #[test]
+    fn small_integer_sets_are_class_indices() {
+        // MNIST style digit labels: categorical with an ascending legend.
+        let values: Vec<String> = (0..100).map(|v| format!("{}", v % 10)).collect();
+        let coloring = colorize(&values);
+
+        assert_eq!(coloring.scale, ColorScale::Categorical);
+        assert_eq!(coloring.legend.len(), 10);
+        let labels: Vec<&str> = coloring.legend.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+        // Same digit, same color; different digit, different color.
+        assert_eq!(coloring.colors[0], coloring.colors[10]);
+        assert_ne!(coloring.colors[0], coloring.colors[1]);
+    }
+
+    #[test]
+    fn many_distinct_integers_stay_continuous() {
+        let values: Vec<String> = (0..11).map(|v| format!("{v}")).collect();
+        let coloring = colorize(&values);
+        assert_eq!(coloring.scale, ColorScale::Continuous);
     }
 
     #[test]

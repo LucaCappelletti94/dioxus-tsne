@@ -12,6 +12,10 @@ use dioxus_decompositions::DecompositionExplorer;
 /// the .js one.
 static WORKER_ASSETS: Asset = asset!("/assets/worker");
 
+/// MNIST subsample (1000 digits, PCA-50, snappy Parquet) offered as a one
+/// click example dataset.
+static MNIST_EXAMPLE: Asset = asset!("/assets/examples/mnist_1k.parquet");
+
 fn main() {
     dioxus::launch(App);
 }
@@ -22,6 +26,7 @@ fn App() -> Element {
         h1 { "dioxus-decompositions" }
         DecompositionExplorer {
             worker_url: format!("{WORKER_ASSETS}/decompositions_worker.js"),
+            example_url: MNIST_EXAMPLE.to_string(),
         }
     }
 }

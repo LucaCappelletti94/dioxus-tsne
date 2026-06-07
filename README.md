@@ -22,3 +22,5 @@ dx serve -p decompositions-app   # build and serve the app
 ```
 
 The worker bundle is not rebuilt by `dx serve`, rerun the script after changing the worker or the library compute code. The worker bundle must exist before the app compiles, since the app registers it as a folder asset.
+
+The app ships a bundled example, a 1000 digit MNIST subsample reduced to 50 PCA dimensions: click "Load example dataset", then "Run", then color by the digit column to see the classic t-SNE digit clusters without bringing your own file.

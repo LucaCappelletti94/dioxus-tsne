@@ -23,8 +23,14 @@ const MAX_LEGEND_ENTRIES: usize = 20;
 /// * `worker_url` - URL of the wasm-bindgen `--target web` JS output of the
 ///   worker binary registering [`DecompositionWorker`], see the crate level
 ///   documentation.
+/// * `example_url` - optional URL of an example dataset (any supported
+///   format). When set, a load button offers it so visitors can try the
+///   explorer with a single click.
 #[component]
-pub fn DecompositionExplorer(worker_url: String) -> Element {
+pub fn DecompositionExplorer(
+    worker_url: String,
+    #[props(default)] example_url: Option<String>,
+) -> Element {
     let mut dataset = use_signal(|| None::<Dataset>);
     let mut ingest_error = use_signal(|| None::<String>);
     let status = use_signal(|| String::from("idle"));
@@ -191,6 +197,37 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
                         }
                     }
                 },
+            }
+            if let Some(url) = example_url {
+                button {
+                    id: "load-example",
+                    onclick: move |_| {
+                        let url = url.clone();
+                        async move {
+                            let fetched = match gloo_net::http::Request::get(&url).send().await {
+                                Ok(response) => response.binary().await,
+                                Err(error) => Err(error),
+                            };
+                            match fetched {
+                                Ok(bytes) => match parse_dataset(&url, &bytes) {
+                                    Ok(parsed) => {
+                                        ingest_error.set(None);
+                                        dataset.set(Some(parsed));
+                                    }
+                                    Err(error) => {
+                                        dataset.set(None);
+                                        ingest_error.set(Some(error.to_string()));
+                                    }
+                                },
+                                Err(error) => {
+                                    dataset.set(None);
+                                    ingest_error.set(Some(error.to_string()));
+                                }
+                            }
+                        }
+                    },
+                    "Load example dataset"
+                }
             }
             if let Some(parsed) = dataset.read().as_ref() {
                 p { id: "dataset-summary",
