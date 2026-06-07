@@ -32,13 +32,15 @@
 //!    `worker_url` prop.
 
 mod components;
+mod compute;
 mod ingest;
 mod messages;
 mod pca;
 mod worker;
 
 pub use components::DecompositionExplorer;
+pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
-pub use messages::{WorkerRequest, WorkerResponse};
+pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
 pub use pca::{PcaResult, pca};
 pub use worker::DecompositionWorker;

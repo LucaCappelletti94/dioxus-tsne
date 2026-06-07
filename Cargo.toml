@@ -43,6 +43,7 @@ parquet = [
 arrow-array = { version = "58", optional = true }
 arrow-cast = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
+bhtsne = { git = "https://github.com/LucaCappelletti94/bhtsne", branch = "epoch-callback", version = "0.5.5", default-features = false, features = ["wasm_js"] }
 bytes = { version = "1", optional = true }
 csv = "1"
 dioxus.workspace = true
@@ -52,6 +53,7 @@ parquet = { version = "58", default-features = false, features = [
     "arrow",
     "snap",
 ], optional = true }
+send_wrapper = "0.6.0"
 serde.workspace = true
 
 [dev-dependencies]
