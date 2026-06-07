@@ -55,6 +55,10 @@ parquet = { version = "58", default-features = false, features = [
 ], optional = true }
 send_wrapper = "0.6.0"
 serde.workspace = true
+wasm-bindgen.workspace = true
+# web-sys 0.3.x pairs with wasm-bindgen 0.2.(x+23): this exact pin matches the
+# wasm-bindgen one above.
+web-sys = { version = "=0.3.98", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
 
 [dev-dependencies]
 serde_json = "1.0.150"

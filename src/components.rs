@@ -7,6 +7,7 @@ use gloo_worker::Spawnable;
 
 use crate::ingest::{Dataset, parse_dataset};
 use crate::messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
+use crate::plot::ScatterPlot;
 use crate::worker::DecompositionWorker;
 
 /// The main decomposition UI: load a tabular file, run a decomposition in the
@@ -163,6 +164,7 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
                 }
             }
             p { id: "status", "{status}" }
+            ScatterPlot { embedding }
         }
     }
 }
