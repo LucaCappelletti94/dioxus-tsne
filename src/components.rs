@@ -5,14 +5,18 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use gloo_worker::Spawnable;
 
+use crate::color::{Coloring, colorize};
 use crate::ingest::{Dataset, parse_dataset};
 use crate::messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
 use crate::plot::ScatterPlot;
 use crate::worker::DecompositionWorker;
 
+/// Longest legend rendered before truncation.
+const MAX_LEGEND_ENTRIES: usize = 20;
+
 /// The main decomposition UI: load a tabular file, run a decomposition in the
-/// worker and follow its progress. The animated scatter plot and the coloring
-/// controls land next.
+/// worker, follow its progress on the animated scatter plot and colorize the
+/// points by label columns, pasted values or a dropped single column file.
 ///
 /// # Props
 ///
@@ -27,6 +31,55 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
     let embedding = use_signal(|| None::<Vec<f32>>);
     let mut method = use_signal(|| String::from("tsne"));
     let mut pca_dims = use_signal(|| 50usize);
+    let mut color_source = use_signal(|| String::from("none"));
+    let mut pasted_labels = use_signal(String::new);
+
+    // The active coloring, or an error when the value count does not match
+    // the dataset. Recomputed on source, paste or dataset changes: recoloring
+    // is a pure redraw, the embedding is never recomputed.
+    let coloring = use_memo(move || -> Result<Option<Coloring>, String> {
+        let source = color_source.read().clone();
+        let values: Vec<String> = match source.as_str() {
+            "none" => return Ok(None),
+            "pasted" => {
+                let text = pasted_labels.read().clone();
+                if text.trim().is_empty() {
+                    return Ok(None);
+                }
+                text.lines().map(|line| line.trim().to_owned()).collect()
+            }
+            column => {
+                let guard = dataset.read();
+                let Some(parsed) = guard.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(labels) = parsed
+                    .label_columns
+                    .iter()
+                    .find(|c| c.name == column.strip_prefix("column:").unwrap_or(column))
+                else {
+                    return Ok(None);
+                };
+                labels.values.clone()
+            }
+        };
+        let n_samples = dataset.read().as_ref().map_or(0, |d| d.n_samples);
+        if values.len() != n_samples {
+            return Err(format!(
+                "{} color values for {n_samples} samples",
+                values.len()
+            ));
+        }
+        Ok(Some(colorize(&values)))
+    });
+    let colors = use_memo(move || {
+        coloring
+            .read()
+            .as_ref()
+            .ok()
+            .and_then(|c| c.as_ref())
+            .map(|c| c.colors.clone())
+    });
 
     // The bridge owns the worker and must live across renders, so it is
     // created once. The callback writes the worker replies into the signals.
@@ -163,8 +216,62 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
                     "Run"
                 }
             }
+            div {
+                label { r#for: "color-source", "Color by: " }
+                select {
+                    id: "color-source",
+                    onchange: move |evt| color_source.set(evt.value()),
+                    option { value: "none", selected: true, "none" }
+                    if let Some(parsed) = dataset.read().as_ref() {
+                        for column in parsed.label_columns.iter() {
+                            option { value: "column:{column.name}", "{column.name}" }
+                        }
+                    }
+                    option { value: "pasted", "pasted values" }
+                }
+                if color_source.read().as_str() == "pasted" {
+                    textarea {
+                        id: "pasted-labels",
+                        rows: "4",
+                        placeholder: "one label or score per line",
+                        oninput: move |evt| pasted_labels.set(evt.value()),
+                    }
+                    label { r#for: "labels-file", " or drop a single column file: " }
+                    input {
+                        id: "labels-file",
+                        r#type: "file",
+                        accept: ".csv,.tsv,.txt",
+                        onchange: move |evt| async move {
+                            let Some(file) = evt.files().into_iter().next() else {
+                                return;
+                            };
+                            if let Ok(text) = file.read_string().await {
+                                pasted_labels.set(text);
+                            }
+                        },
+                    }
+                }
+                if let Err(error) = coloring.read().as_ref() {
+                    p { id: "color-error", color: "red", "{error}" }
+                }
+            }
+            if let Ok(Some(active)) = coloring.read().as_ref() {
+                div { id: "legend",
+                    for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
+                        span { style: "margin-right: 0.8em;",
+                            span {
+                                style: "display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.3em; border-radius: 50%; background: {entry.color};",
+                            }
+                            "{entry.label}"
+                        }
+                    }
+                    if active.legend.len() > MAX_LEGEND_ENTRIES {
+                        span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
+                    }
+                }
+            }
             p { id: "status", "{status}" }
-            ScatterPlot { embedding }
+            ScatterPlot { embedding, colors: Some(colors.into()) }
         }
     }
 }

@@ -31,6 +31,7 @@
 //! 3. Passes the URL of the wasm-bindgen JS output to the components via the
 //!    `worker_url` prop.
 
+mod color;
 mod components;
 mod compute;
 mod ingest;
@@ -39,6 +40,7 @@ mod pca;
 mod plot;
 mod worker;
 
+pub use color::{ColorScale, Coloring, LegendEntry, colorize};
 pub use components::DecompositionExplorer;
 pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};

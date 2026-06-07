@@ -52,7 +52,16 @@ fn project_to_viewport(points: &[f32], width: f32, height: f32, margin: f32) -> 
 }
 
 /// Draws the embedding on the canvas.
-fn draw(canvas: &HtmlCanvasElement, points: &[f32], width: u32, height: u32) {
+/// Default point color when no coloring is active.
+const DEFAULT_COLOR: &str = "rgba(31, 119, 180, 0.8)";
+
+fn draw(
+    canvas: &HtmlCanvasElement,
+    points: &[f32],
+    colors: Option<&[String]>,
+    width: u32,
+    height: u32,
+) {
     let Some(context) = canvas
         .get_context("2d")
         .ok()
@@ -70,23 +79,43 @@ fn draw(canvas: &HtmlCanvasElement, points: &[f32], width: u32, height: u32) {
         return;
     }
 
-    context.set_fill_style_str("rgba(31, 119, 180, 0.8)");
+    // Points are batched per color into a single path each, so a coloring
+    // costs as many fills as there are distinct colors (the continuous scale
+    // is quantized for this very reason).
+    let colors = colors.filter(|c| c.len() == n);
+    let mut batches: Vec<(&str, Vec<usize>)> = Vec::new();
+    match colors {
+        Some(colors) => {
+            for (index, color) in colors.iter().enumerate() {
+                match batches.iter_mut().find(|(c, _)| c == color) {
+                    Some((_, indices)) => indices.push(index),
+                    None => batches.push((color, vec![index])),
+                }
+            }
+        }
+        None => batches.push((DEFAULT_COLOR, (0..n).collect())),
+    }
 
     // Circles look better but cost a path arc each, rectangles keep huge
     // embeddings fluid.
-    if n <= 20_000 {
-        const RADIUS: f64 = 3.0;
-        context.begin_path();
-        for &(x, y) in &pixels {
-            let (x, y) = (f64::from(x), f64::from(y));
-            context.move_to(x + RADIUS, y);
-            let _ = context.arc(x, y, RADIUS, 0.0, std::f64::consts::TAU);
-        }
-        context.fill();
-    } else {
-        const SIDE: f64 = 2.0;
-        for &(x, y) in &pixels {
-            context.fill_rect(f64::from(x), f64::from(y), SIDE, SIDE);
+    for (color, indices) in batches {
+        context.set_fill_style_str(color);
+        if n <= 20_000 {
+            const RADIUS: f64 = 3.0;
+            context.begin_path();
+            for &index in &indices {
+                let (x, y) = pixels[index];
+                let (x, y) = (f64::from(x), f64::from(y));
+                context.move_to(x + RADIUS, y);
+                let _ = context.arc(x, y, RADIUS, 0.0, std::f64::consts::TAU);
+            }
+            context.fill();
+        } else {
+            const SIDE: f64 = 2.0;
+            for &index in &indices {
+                let (x, y) = pixels[index];
+                context.fill_rect(f64::from(x), f64::from(y), SIDE, SIDE);
+            }
         }
     }
 }
@@ -97,23 +126,27 @@ fn draw(canvas: &HtmlCanvasElement, points: &[f32], width: u32, height: u32) {
 /// # Props
 ///
 /// * `embedding` - the points to draw, cleared when `None`.
+/// * `colors` - optional CSS color per point, see [`crate::colorize`]. Points
+///   fall back to a single default color when absent or of mismatched length.
 /// * `width` - canvas width in pixels, defaults to 800.
 /// * `height` - canvas height in pixels, defaults to 600.
 #[component]
 pub fn ScatterPlot(
     embedding: ReadSignal<Option<Vec<f32>>>,
+    #[props(default = None)] colors: Option<ReadSignal<Option<Vec<String>>>>,
     #[props(default = 800)] width: u32,
     #[props(default = 600)] height: u32,
 ) -> Element {
     let mut canvas = use_signal(|| None::<HtmlCanvasElement>);
 
-    // Redraws when either the canvas mounts or the embedding changes.
+    // Redraws when the canvas mounts or the embedding or coloring changes.
     use_effect(move || {
         let Some(canvas) = canvas() else {
             return;
         };
+        let colors = colors.map(|c| c.read().clone()).unwrap_or_default();
         match embedding.read().as_ref() {
-            Some(points) => draw(&canvas, points, width, height),
+            Some(points) => draw(&canvas, points, colors.as_deref(), width, height),
             None => {
                 if let Some(context) = canvas
                     .get_context("2d")
