@@ -45,6 +45,12 @@ mod pca;
 mod plot;
 mod worker;
 
+/// The default stylesheet of the components, injected by
+/// [`DecompositionExplorer`] unless its `styled` prop is false. Consumers
+/// styling the `decompositions-*` class names themselves can serve their own
+/// rules instead.
+pub const DEFAULT_STYLE: &str = include_str!("style.css");
+
 pub use color::{ColorScale, Coloring, LegendEntry, colorize};
 pub use components::{DecompositionExplorer, ExampleDataset};
 pub use compute::{DecomposeOutput, decompose};

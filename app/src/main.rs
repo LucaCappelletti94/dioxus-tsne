@@ -20,6 +20,24 @@ static MNIST_EXAMPLE: Asset = asset!("/assets/examples/mnist_1k.parquet");
 /// reduction to 50 dimensions.
 static CORA_EXAMPLE: Asset = asset!("/assets/examples/cora.parquet");
 
+/// Minimal page shell styling, the component brings its own default theme.
+const APP_STYLE: &str = "
+body {
+    margin: 0;
+    padding: 2rem 1.5rem;
+    display: flex;
+    justify-content: center;
+    background: #ffffff;
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+main { width: 100%; max-width: 56rem; }
+h1 { font-size: 1.35rem; font-weight: 600; color: #1c2733; margin: 0 0 1rem; }
+@media (prefers-color-scheme: dark) {
+    body { background: #14181d; }
+    h1 { color: #e7ecf1; }
+}
+";
+
 fn main() {
     dioxus::launch(App);
 }
@@ -27,6 +45,8 @@ fn main() {
 #[component]
 fn App() -> Element {
     rsx! {
+        style { {APP_STYLE} }
+        main {
         h1 { "dioxus-decompositions" }
         DecompositionExplorer {
             worker_url: WORKER_LOADER_URL,
@@ -40,6 +60,7 @@ fn App() -> Element {
                     url: CORA_EXAMPLE.to_string(),
                 },
             ],
+        }
         }
     }
 }

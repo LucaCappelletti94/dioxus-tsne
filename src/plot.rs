@@ -163,6 +163,7 @@ pub fn ScatterPlot(
     rsx! {
         canvas {
             id: "scatter-plot",
+            class: "decompositions-plot",
             width: "{width}",
             height: "{height}",
             onmounted: move |evt| {

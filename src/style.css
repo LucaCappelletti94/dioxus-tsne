@@ -1,0 +1,151 @@
+/* Default theme of the dioxus-decompositions components. Scoped under the
+   .decompositions-explorer class so it composes with any host page. Consumers
+   can disable it through the `styled` prop and bring their own rules. */
+
+.decompositions-explorer {
+    --decompositions-accent: #1f77b4;
+    --decompositions-accent-strong: #16608f;
+    --decompositions-bg: #ffffff;
+    --decompositions-surface: #f7f8fa;
+    --decompositions-border: #d8dde3;
+    --decompositions-text: #1c2733;
+    --decompositions-muted: #5d6b7a;
+    --decompositions-error: #c0392b;
+
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--decompositions-text);
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    max-width: 56rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    .decompositions-explorer {
+        --decompositions-accent: #4da3d8;
+        --decompositions-accent-strong: #74b9e3;
+        --decompositions-bg: #14181d;
+        --decompositions-surface: #1c2229;
+        --decompositions-border: #323a44;
+        --decompositions-text: #e7ecf1;
+        --decompositions-muted: #9aa7b4;
+        --decompositions-error: #e07b6e;
+    }
+}
+
+.decompositions-explorer section {
+    background: var(--decompositions-surface);
+    border: 1px solid var(--decompositions-border);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.7rem;
+}
+
+.decompositions-explorer label {
+    font-size: 0.85rem;
+    color: var(--decompositions-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.decompositions-explorer button {
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 0.45rem 1rem;
+    border: none;
+    border-radius: 7px;
+    background: var(--decompositions-accent);
+    color: #ffffff;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.decompositions-explorer button:hover:not(:disabled) {
+    background: var(--decompositions-accent-strong);
+}
+
+.decompositions-explorer button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.decompositions-explorer input,
+.decompositions-explorer select,
+.decompositions-explorer textarea {
+    font: inherit;
+    font-size: 0.9rem;
+    color: var(--decompositions-text);
+    background: var(--decompositions-bg);
+    border: 1px solid var(--decompositions-border);
+    border-radius: 7px;
+    padding: 0.35rem 0.55rem;
+}
+
+.decompositions-explorer input[type="number"] {
+    width: 5.5rem;
+}
+
+.decompositions-explorer input[type="file"] {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--decompositions-muted);
+}
+
+.decompositions-explorer textarea {
+    width: 100%;
+    resize: vertical;
+}
+
+.decompositions-summary {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--decompositions-muted);
+    flex-basis: 100%;
+}
+
+.decompositions-error {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--decompositions-error);
+    flex-basis: 100%;
+}
+
+.decompositions-status {
+    margin: 0;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--decompositions-muted);
+}
+
+.decompositions-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    font-size: 0.85rem;
+}
+
+.decompositions-legend-entry {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.decompositions-legend-swatch {
+    width: 0.75em;
+    height: 0.75em;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.decompositions-plot {
+    background: var(--decompositions-bg);
+    border: 1px solid var(--decompositions-border);
+    border-radius: 10px;
+    max-width: 100%;
+    height: auto;
+}

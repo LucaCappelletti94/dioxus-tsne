@@ -34,10 +34,14 @@ pub struct ExampleDataset {
 ///   documentation.
 /// * `examples` - bundled example datasets, one load button each, so visitors
 ///   can try the explorer with a single click.
+/// * `styled` - whether to inject the default stylesheet (also exported as
+///   [`crate::DEFAULT_STYLE`]), on by default. Disable it to bring your own
+///   rules for the `decompositions-*` class names.
 #[component]
 pub fn DecompositionExplorer(
     worker_url: String,
     #[props(default)] examples: Vec<ExampleDataset>,
+    #[props(default = true)] styled: bool,
 ) -> Element {
     let mut dataset = use_signal(|| None::<Dataset>);
     let mut ingest_error = use_signal(|| None::<String>);
@@ -182,153 +186,167 @@ pub fn DecompositionExplorer(
     };
 
     rsx! {
-        div {
-            input {
-                id: "file-input",
-                r#type: "file",
-                accept: ".csv,.tsv,.parquet",
-                onchange: move |evt| async move {
-                    let Some(file) = evt.files().into_iter().next() else {
-                        return;
-                    };
-                    match file.read_bytes().await {
-                        Ok(bytes) => match parse_dataset(&file.name(), &bytes) {
-                            Ok(parsed) => {
-                                ingest_error.set(None);
-                                dataset.set(Some(parsed));
-                            }
-                            Err(error) => {
-                                dataset.set(None);
-                                ingest_error.set(Some(error.to_string()));
-                            }
-                        },
-                        Err(error) => {
-                            dataset.set(None);
-                            ingest_error.set(Some(error.to_string()));
-                        }
-                    }
-                },
+        div { class: "decompositions-explorer",
+            if styled {
+                style { {crate::DEFAULT_STYLE} }
             }
-            for (index, example) in examples.iter().enumerate() {
-                button {
-                    id: "load-example-{index}",
-                    onclick: {
-                        let url = example.url.clone();
-                        move |_| {
-                            let url = url.clone();
-                            async move {
-                                let fetched = match gloo_net::http::Request::get(&url).send().await
-                                {
-                                    Ok(response) => response.binary().await,
-                                    Err(error) => Err(error),
-                                };
-                                match fetched {
-                                    Ok(bytes) => match parse_dataset(&url, &bytes) {
-                                        Ok(parsed) => {
-                                            ingest_error.set(None);
-                                            dataset.set(Some(parsed));
-                                        }
-                                        Err(error) => {
-                                            dataset.set(None);
-                                            ingest_error.set(Some(error.to_string()));
-                                        }
-                                    },
+            section {
+                label { r#for: "file-input", "Dataset"
+                    input {
+                        id: "file-input",
+                        r#type: "file",
+                        accept: ".csv,.tsv,.parquet",
+                        onchange: move |evt| async move {
+                            let Some(file) = evt.files().into_iter().next() else {
+                                return;
+                            };
+                            match file.read_bytes().await {
+                                Ok(bytes) => match parse_dataset(&file.name(), &bytes) {
+                                    Ok(parsed) => {
+                                        ingest_error.set(None);
+                                        dataset.set(Some(parsed));
+                                    }
                                     Err(error) => {
                                         dataset.set(None);
                                         ingest_error.set(Some(error.to_string()));
                                     }
+                                },
+                                Err(error) => {
+                                    dataset.set(None);
+                                    ingest_error.set(Some(error.to_string()));
                                 }
                             }
-                        }
-                    },
-                    "Load {example.name}"
-                }
-            }
-            if let Some(parsed) = dataset.read().as_ref() {
-                p { id: "dataset-summary",
-                    "{parsed.n_samples} samples x {parsed.n_features} features"
-                    if !parsed.label_columns.is_empty() {
-                        ", label columns: "
-                        {parsed.label_columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")}
+                        },
                     }
                 }
+                for (index, example) in examples.iter().enumerate() {
+                    button {
+                        id: "load-example-{index}",
+                        onclick: {
+                            let url = example.url.clone();
+                            move |_| {
+                                let url = url.clone();
+                                async move {
+                                    let fetched =
+                                        match gloo_net::http::Request::get(&url).send().await {
+                                            Ok(response) => response.binary().await,
+                                            Err(error) => Err(error),
+                                        };
+                                    match fetched {
+                                        Ok(bytes) => match parse_dataset(&url, &bytes) {
+                                            Ok(parsed) => {
+                                                ingest_error.set(None);
+                                                dataset.set(Some(parsed));
+                                            }
+                                            Err(error) => {
+                                                dataset.set(None);
+                                                ingest_error.set(Some(error.to_string()));
+                                            }
+                                        },
+                                        Err(error) => {
+                                            dataset.set(None);
+                                            ingest_error.set(Some(error.to_string()));
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "Load {example.name}"
+                    }
+                }
+                if let Some(parsed) = dataset.read().as_ref() {
+                    p { id: "dataset-summary", class: "decompositions-summary",
+                        "{parsed.n_samples} samples x {parsed.n_features} features"
+                        if !parsed.label_columns.is_empty() {
+                            ", label columns: "
+                            {parsed.label_columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")}
+                        }
+                    }
+                }
+                if let Some(error) = ingest_error.read().as_ref() {
+                    p { id: "ingest-error", class: "decompositions-error", "{error}" }
+                }
             }
-            if let Some(error) = ingest_error.read().as_ref() {
-                p { id: "ingest-error", color: "red", "{error}" }
-            }
-            div {
-                label { r#for: "method", "Method: " }
-                select {
-                    id: "method",
-                    onchange: move |evt| method.set(evt.value()),
-                    option { value: "tsne", selected: true, "t-SNE" }
-                    option { value: "pca", "PCA" }
+            section {
+                label { r#for: "method", "Method"
+                    select {
+                        id: "method",
+                        value: "{method}",
+                        onchange: move |evt| method.set(evt.value()),
+                        option { value: "tsne", "t-SNE" }
+                        option { value: "pca", "PCA" }
+                    }
                 }
                 if method.read().as_str() == "tsne" {
-                    label { r#for: "perplexity", " Perplexity: " }
-                    input {
-                        id: "perplexity",
-                        r#type: "number",
-                        min: "1",
-                        step: "1",
-                        value: "{perplexity}",
-                        onchange: move |evt| {
-                            if let Ok(value) = evt.value().parse::<f32>() {
-                                perplexity.set(value.max(1.0));
-                            }
-                        },
+                    label { r#for: "perplexity", "Perplexity"
+                        input {
+                            id: "perplexity",
+                            r#type: "number",
+                            min: "1",
+                            step: "1",
+                            value: "{perplexity}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    perplexity.set(value.max(1.0));
+                                }
+                            },
+                        }
                     }
-                    label { r#for: "theta", " Theta: " }
-                    input {
-                        id: "theta",
-                        r#type: "number",
-                        min: "0.1",
-                        max: "1",
-                        step: "0.1",
-                        value: "{theta}",
-                        onchange: move |evt| {
-                            if let Ok(value) = evt.value().parse::<f32>() {
-                                theta.set(value.clamp(0.1, 1.0));
-                            }
-                        },
+                    label { r#for: "theta", "Theta"
+                        input {
+                            id: "theta",
+                            r#type: "number",
+                            min: "0.1",
+                            max: "1",
+                            step: "0.1",
+                            value: "{theta}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    theta.set(value.clamp(0.1, 1.0));
+                                }
+                            },
+                        }
                     }
-                    label { r#for: "epochs", " Epochs: " }
-                    input {
-                        id: "epochs",
-                        r#type: "number",
-                        min: "1",
-                        step: "50",
-                        value: "{epochs}",
-                        onchange: move |evt| {
-                            if let Ok(value) = evt.value().parse::<usize>() {
-                                epochs.set(value.max(1));
-                            }
-                        },
+                    label { r#for: "epochs", "Epochs"
+                        input {
+                            id: "epochs",
+                            r#type: "number",
+                            min: "1",
+                            step: "50",
+                            value: "{epochs}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<usize>() {
+                                    epochs.set(value.max(1));
+                                }
+                            },
+                        }
                     }
-                    label { r#for: "learning-rate", " Learning rate: " }
-                    input {
-                        id: "learning-rate",
-                        r#type: "number",
-                        min: "1",
-                        step: "10",
-                        value: "{learning_rate}",
-                        onchange: move |evt| {
-                            if let Ok(value) = evt.value().parse::<f32>() {
-                                learning_rate.set(value.max(1.0));
-                            }
-                        },
+                    label { r#for: "learning-rate", "Learning rate"
+                        input {
+                            id: "learning-rate",
+                            r#type: "number",
+                            min: "1",
+                            step: "10",
+                            value: "{learning_rate}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    learning_rate.set(value.max(1.0));
+                                }
+                            },
+                        }
                     }
-                    label { r#for: "pca-dims", " PCA dimensions: " }
-                    input {
-                        id: "pca-dims",
-                        r#type: "number",
-                        min: "2",
-                        value: "{pca_dims}",
-                        onchange: move |evt| {
-                            if let Ok(dims) = evt.value().parse::<usize>() {
-                                pca_dims.set(dims.max(2));
-                            }
-                        },
+                    label { r#for: "pca-dims", "PCA dimensions"
+                        input {
+                            id: "pca-dims",
+                            r#type: "number",
+                            min: "2",
+                            value: "{pca_dims}",
+                            onchange: move |evt| {
+                                if let Ok(dims) = evt.value().parse::<usize>() {
+                                    pca_dims.set(dims.max(2));
+                                }
+                            },
+                        }
                     }
                 }
                 button {
@@ -339,62 +357,66 @@ pub fn DecompositionExplorer(
                     onclick: run,
                     "Run"
                 }
+                p { id: "status", class: "decompositions-status", "{status}" }
             }
-            div {
-                label { r#for: "color-source", "Color by: " }
-                select {
-                    id: "color-source",
-                    onchange: move |evt| color_source.set(evt.value()),
-                    option { value: "none", selected: true, "none" }
-                    if let Some(parsed) = dataset.read().as_ref() {
-                        for column in parsed.label_columns.iter() {
-                            option { value: "column:{column.name}", "{column.name}" }
+            section {
+                label { r#for: "color-source", "Color by"
+                    select {
+                        id: "color-source",
+                        value: "{color_source}",
+                        onchange: move |evt| color_source.set(evt.value()),
+                        option { value: "none", "none" }
+                        if let Some(parsed) = dataset.read().as_ref() {
+                            for column in parsed.label_columns.iter() {
+                                option { value: "column:{column.name}", "{column.name}" }
+                            }
                         }
+                        option { value: "pasted", "pasted values" }
                     }
-                    option { value: "pasted", "pasted values" }
                 }
                 if color_source.read().as_str() == "pasted" {
+                    label { r#for: "labels-file", "or a single column file"
+                        input {
+                            id: "labels-file",
+                            r#type: "file",
+                            accept: ".csv,.tsv,.txt",
+                            onchange: move |evt| async move {
+                                let Some(file) = evt.files().into_iter().next() else {
+                                    return;
+                                };
+                                if let Ok(text) = file.read_string().await {
+                                    pasted_labels.set(text);
+                                }
+                            },
+                        }
+                    }
                     textarea {
                         id: "pasted-labels",
                         rows: "4",
                         placeholder: "one label or score per line",
                         oninput: move |evt| pasted_labels.set(evt.value()),
                     }
-                    label { r#for: "labels-file", " or drop a single column file: " }
-                    input {
-                        id: "labels-file",
-                        r#type: "file",
-                        accept: ".csv,.tsv,.txt",
-                        onchange: move |evt| async move {
-                            let Some(file) = evt.files().into_iter().next() else {
-                                return;
-                            };
-                            if let Ok(text) = file.read_string().await {
-                                pasted_labels.set(text);
-                            }
-                        },
-                    }
                 }
                 if let Err(error) = coloring.read().as_ref() {
-                    p { id: "color-error", color: "red", "{error}" }
+                    p { id: "color-error", class: "decompositions-error", "{error}" }
                 }
-            }
-            if let Ok(Some(active)) = coloring.read().as_ref() {
-                div { id: "legend",
-                    for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
-                        span { style: "margin-right: 0.8em;",
-                            span {
-                                style: "display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.3em; border-radius: 50%; background: {entry.color};",
+                if let Ok(Some(active)) = coloring.read().as_ref() {
+                    div { id: "legend", class: "decompositions-legend",
+                        for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
+                            span { class: "decompositions-legend-entry",
+                                span {
+                                    class: "decompositions-legend-swatch",
+                                    style: "background: {entry.color};",
+                                }
+                                "{entry.label}"
                             }
-                            "{entry.label}"
+                        }
+                        if active.legend.len() > MAX_LEGEND_ENTRIES {
+                            span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
                         }
                     }
-                    if active.legend.len() > MAX_LEGEND_ENTRIES {
-                        span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
-                    }
                 }
             }
-            p { id: "status", "{status}" }
             ScatterPlot { embedding, colors: Some(colors.into()) }
         }
     }
