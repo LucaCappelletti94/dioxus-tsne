@@ -32,9 +32,11 @@
 //!    `worker_url` prop.
 
 mod components;
+mod ingest;
 mod messages;
 mod worker;
 
 pub use components::DecompositionExplorer;
+pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
 pub use messages::{WorkerRequest, WorkerResponse};
 pub use worker::DecompositionWorker;

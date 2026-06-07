@@ -26,7 +26,32 @@ readme = "README.md"
 keywords = ["dioxus", "tsne", "pca", "visualization", "wasm"]
 categories = ["visualization", "wasm", "gui"]
 
+[features]
+default = ["parquet"]
+# Parquet ingestion through the Arrow reader. Snappy is the only compression
+# enabled: it is the Parquet default, and the gzip backend (flate2) does not
+# build on wasm32-unknown-unknown.
+parquet = [
+    "dep:arrow-array",
+    "dep:arrow-cast",
+    "dep:arrow-schema",
+    "dep:bytes",
+    "dep:parquet",
+]
+
 [dependencies]
+arrow-array = { version = "58", optional = true }
+arrow-cast = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
+bytes = { version = "1", optional = true }
+csv = "1"
 dioxus.workspace = true
 gloo-worker.workspace = true
+parquet = { version = "58", default-features = false, features = [
+    "arrow",
+    "snap",
+], optional = true }
 serde.workspace = true
+
+[dev-dependencies]
+serde_json = "1.0.150"
