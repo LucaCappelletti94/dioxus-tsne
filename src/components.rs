@@ -30,7 +30,12 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
     let status = use_signal(|| String::from("idle"));
     let embedding = use_signal(|| None::<Vec<f32>>);
     let mut method = use_signal(|| String::from("tsne"));
-    let mut pca_dims = use_signal(|| 50usize);
+    let defaults = TsneParams::default();
+    let mut pca_dims = use_signal(|| defaults.pca_dims);
+    let mut perplexity = use_signal(|| defaults.perplexity);
+    let mut theta = use_signal(|| defaults.theta);
+    let mut epochs = use_signal(|| defaults.epochs);
+    let mut learning_rate = use_signal(|| defaults.learning_rate);
     let mut color_source = use_signal(|| String::from("none"));
     let mut pasted_labels = use_signal(String::new);
 
@@ -79,6 +84,12 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
             .ok()
             .and_then(|c| c.as_ref())
             .map(|c| c.colors.clone())
+    });
+
+    // A decomposition is in flight while the status reports progress.
+    let busy = use_memo(move || {
+        let status = status.read();
+        status.as_str() == "running" || status.starts_with("epoch ")
     });
 
     // The bridge owns the worker and must live across renders, so it is
@@ -134,6 +145,10 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
                 DecompositionMethod::Pca
             } else {
                 DecompositionMethod::Tsne(TsneParams {
+                    perplexity: perplexity(),
+                    theta: theta(),
+                    epochs: epochs(),
+                    learning_rate: learning_rate(),
                     pca_dims: pca_dims(),
                     ..TsneParams::default()
                 })
@@ -197,21 +212,78 @@ pub fn DecompositionExplorer(worker_url: String) -> Element {
                     option { value: "tsne", selected: true, "t-SNE" }
                     option { value: "pca", "PCA" }
                 }
-                label { r#for: "pca-dims", " PCA dimensions: " }
-                input {
-                    id: "pca-dims",
-                    r#type: "number",
-                    min: "2",
-                    value: "{pca_dims}",
-                    onchange: move |evt| {
-                        if let Ok(dims) = evt.value().parse::<usize>() {
-                            pca_dims.set(dims.max(2));
-                        }
-                    },
+                if method.read().as_str() == "tsne" {
+                    label { r#for: "perplexity", " Perplexity: " }
+                    input {
+                        id: "perplexity",
+                        r#type: "number",
+                        min: "1",
+                        step: "1",
+                        value: "{perplexity}",
+                        onchange: move |evt| {
+                            if let Ok(value) = evt.value().parse::<f32>() {
+                                perplexity.set(value.max(1.0));
+                            }
+                        },
+                    }
+                    label { r#for: "theta", " Theta: " }
+                    input {
+                        id: "theta",
+                        r#type: "number",
+                        min: "0.1",
+                        max: "1",
+                        step: "0.1",
+                        value: "{theta}",
+                        onchange: move |evt| {
+                            if let Ok(value) = evt.value().parse::<f32>() {
+                                theta.set(value.clamp(0.1, 1.0));
+                            }
+                        },
+                    }
+                    label { r#for: "epochs", " Epochs: " }
+                    input {
+                        id: "epochs",
+                        r#type: "number",
+                        min: "1",
+                        step: "50",
+                        value: "{epochs}",
+                        onchange: move |evt| {
+                            if let Ok(value) = evt.value().parse::<usize>() {
+                                epochs.set(value.max(1));
+                            }
+                        },
+                    }
+                    label { r#for: "learning-rate", " Learning rate: " }
+                    input {
+                        id: "learning-rate",
+                        r#type: "number",
+                        min: "1",
+                        step: "10",
+                        value: "{learning_rate}",
+                        onchange: move |evt| {
+                            if let Ok(value) = evt.value().parse::<f32>() {
+                                learning_rate.set(value.max(1.0));
+                            }
+                        },
+                    }
+                    label { r#for: "pca-dims", " PCA dimensions: " }
+                    input {
+                        id: "pca-dims",
+                        r#type: "number",
+                        min: "2",
+                        value: "{pca_dims}",
+                        onchange: move |evt| {
+                            if let Ok(dims) = evt.value().parse::<usize>() {
+                                pca_dims.set(dims.max(2));
+                            }
+                        },
+                    }
                 }
                 button {
                     id: "run",
-                    disabled: dataset.read().is_none(),
+                    // The worker queues messages, a run during a run would
+                    // silently execute afterwards, so the button is gated.
+                    disabled: dataset.read().is_none() || busy(),
                     onclick: run,
                     "Run"
                 }
