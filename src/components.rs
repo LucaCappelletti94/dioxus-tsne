@@ -112,6 +112,9 @@ pub fn DecompositionExplorer(
     let bridge = use_hook(|| {
         Rc::new(
             DecompositionWorker::spawner()
+                // The URL points at a loader module that initializes the
+                // wasm-bindgen output itself, see the crate documentation.
+                .with_loader(true)
                 .callback(move |response| {
                     let mut status = status;
                     let mut embedding = embedding;

@@ -10,10 +10,10 @@ repository = "https://github.com/LucaCappelletti94/dioxus-decompositions"
 dioxus = "0.7"
 gloo-worker = "0.6"
 serde = { version = "1", features = ["derive"] }
-# The worker bundle is post-processed with the wasm-bindgen CLI installed on the
-# machine, whose version must match the crate version exactly. Keep this pin in
-# sync with the output of `wasm-bindgen --version`.
-wasm-bindgen = "=0.2.121"
+# No exact pin needed: the worker bundle is post-processed by the
+# wasm-bindgen-cli-support library (see app/build.rs), which the shared
+# lockfile keeps at the same version as this crate.
+wasm-bindgen = "0.2"
 
 [package]
 name = "dioxus-decompositions"
@@ -57,9 +57,7 @@ parquet = { version = "58", default-features = false, features = [
 send_wrapper = "0.6.0"
 serde.workspace = true
 wasm-bindgen.workspace = true
-# web-sys 0.3.x pairs with wasm-bindgen 0.2.(x+23): this exact pin matches the
-# wasm-bindgen one above.
-web-sys = { version = "=0.3.98", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
 
 [dev-dependencies]
 serde_json = "1.0.150"

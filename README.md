@@ -10,18 +10,17 @@ Reusable [Dioxus](https://dioxuslabs.com) components to run and visualize decomp
 
 ## Why consumers need a worker binary
 
-Browsers require web workers to be separate scripts, so the compute part cannot be hidden inside a component. The library ships the worker type and the components, the consuming app builds the worker binary to its own wasm bundle and passes the URL it is served from to the components through the `worker_url` prop. See the crate documentation for the exact steps and the `app` crate for a complete example.
+Browsers require web workers to be separate scripts, so the compute part cannot be hidden inside a component. The library ships the worker type and the components, the consuming app builds the worker binary to its own wasm bundle and passes the URL it is served from to the components through the `worker_url` prop. The `app` crate automates this with a `build.rs` that compiles the worker and runs wasm-bindgen (through the `wasm-bindgen-cli-support` library, no external CLI needed) into `public/worker/`, which `dx` serves verbatim at the site root. Copy that build script as the starting point for your own integration.
 
 ## Development
 
-Requirements: the `wasm32-unknown-unknown` target, the `dx` CLI (Dioxus 0.7) and the `wasm-bindgen` CLI at the exact version pinned in the workspace `Cargo.toml`.
+Requirements: the `wasm32-unknown-unknown` target and the `dx` CLI (Dioxus 0.7).
 
 ```
-./scripts/build-worker.sh        # build the worker bundle into app/assets/worker/
-dx serve -p decompositions-app   # build and serve the app
+dx serve -p decompositions-app
 ```
 
-The worker bundle is not rebuilt by `dx serve`, rerun the script after changing the worker or the library compute code. The worker bundle must exist before the app compiles, since the app registers it as a folder asset.
+The worker bundle is built automatically by the app's `build.rs`, including on changes to the worker or library code. Set `DECOMPOSITIONS_SKIP_WORKER_BUILD=1` to skip it for type-check-only tooling.
 
 The app ships two bundled examples loadable with one click, so you can try the full flow without bringing your own file:
 

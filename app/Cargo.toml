@@ -9,3 +9,9 @@ publish = false
 [dependencies]
 dioxus = { workspace = true, features = ["web"] }
 dioxus-decompositions = { path = ".." }
+
+[build-dependencies]
+# Runs wasm-bindgen as a library on the worker bundle, see build.rs. Must
+# resolve to the same version as the wasm-bindgen crate, which the shared
+# lockfile takes care of.
+wasm-bindgen-cli-support = "0.2"

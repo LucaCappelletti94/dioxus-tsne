@@ -24,11 +24,16 @@
 //! }
 //! ```
 //!
-//! 2. Builds it to wasm with `wasm-bindgen --target web` and serves the output
-//!    (with Dioxus, register it as a folder asset, see the `app` crate of this
-//!    repository for a complete example).
+//! 2. Builds it to wasm, runs wasm-bindgen (`--target web` semantics) on it
+//!    and serves the output next to a two line loader module that initializes
+//!    it with an explicit wasm URL. The `app` crate of this repository
+//!    automates all of this with a `build.rs` using the
+//!    `wasm-bindgen-cli-support` library, writing into the `public/`
+//!    directory that dx serves at the site root. Copy it. The explicit wasm
+//!    URL in the loader matters: dx minifies served JS and strips the
+//!    `import.meta.url` based default path inside the wasm-bindgen glue.
 //!
-//! 3. Passes the URL of the wasm-bindgen JS output to the components via the
+//! 3. Passes the URL of the loader module to the components via the
 //!    `worker_url` prop.
 
 mod color;
