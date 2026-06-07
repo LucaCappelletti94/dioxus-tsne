@@ -34,9 +34,11 @@
 mod components;
 mod ingest;
 mod messages;
+mod pca;
 mod worker;
 
 pub use components::DecompositionExplorer;
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
 pub use messages::{WorkerRequest, WorkerResponse};
+pub use pca::{PcaResult, pca};
 pub use worker::DecompositionWorker;
