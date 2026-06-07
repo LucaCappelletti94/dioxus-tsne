@@ -1,0 +1,32 @@
+[workspace]
+members = ["app", "worker"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/LucaCappelletti94/dioxus-decompositions"
+
+[workspace.dependencies]
+dioxus = "0.7"
+gloo-worker = "0.6"
+serde = { version = "1", features = ["derive"] }
+# The worker bundle is post-processed with the wasm-bindgen CLI installed on the
+# machine, whose version must match the crate version exactly. Keep this pin in
+# sync with the output of `wasm-bindgen --version`.
+wasm-bindgen = "=0.2.121"
+
+[package]
+name = "dioxus-decompositions"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dioxus components to run and visualize decompositions like t-SNE, PCA and more, off the main thread in a web worker"
+readme = "README.md"
+keywords = ["dioxus", "tsne", "pca", "visualization", "wasm"]
+categories = ["visualization", "wasm", "gui"]
+
+[dependencies]
+dioxus.workspace = true
+gloo-worker.workspace = true
+serde.workspace = true

@@ -1,0 +1,27 @@
+//! The dioxus-decompositions web app: drop a CSV, TSV or Parquet file, reduce
+//! with PCA, embed with a selectable decomposition and watch the scatter plot
+//! animate as epochs progress. Also serves as the reference consumer of the
+//! dioxus-decompositions component library.
+
+use dioxus::prelude::*;
+use dioxus_decompositions::DecompositionExplorer;
+
+/// Folder asset holding the wasm-bindgen output of the worker bundle, generated
+/// by scripts/build-worker.sh before the app build. A folder asset keeps the
+/// inner file names, which gloo-worker relies on to derive the .wasm URL from
+/// the .js one.
+static WORKER_ASSETS: Asset = asset!("/assets/worker");
+
+fn main() {
+    dioxus::launch(App);
+}
+
+#[component]
+fn App() -> Element {
+    rsx! {
+        h1 { "dioxus-decompositions" }
+        DecompositionExplorer {
+            worker_url: format!("{WORKER_ASSETS}/decompositions_worker.js"),
+        }
+    }
+}
