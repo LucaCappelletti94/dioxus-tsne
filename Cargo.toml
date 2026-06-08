@@ -57,7 +57,12 @@ parquet = { version = "58", default-features = false, features = [
 send_wrapper = "0.6.0"
 serde.workspace = true
 wasm-bindgen.workspace = true
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "CanvasRenderingContext2d", "Element"] }
+web-sys = { version = "0.3", features = [
+    "CanvasRenderingContext2d",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlSelectElement",
+] }
 
 [dev-dependencies]
 serde_json = "1.0.150"

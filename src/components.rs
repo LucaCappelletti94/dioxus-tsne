@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use gloo_worker::Spawnable;
+use wasm_bindgen::JsCast;
 
 use crate::color::{Coloring, colorize};
 use crate::ingest::{Dataset, parse_dataset};
@@ -56,6 +57,21 @@ pub fn DecompositionExplorer(
     let mut learning_rate = use_signal(|| defaults.learning_rate);
     let mut color_source = use_signal(|| String::from("none"));
     let mut pasted_labels = use_signal(String::new);
+    let mut color_select = use_signal(|| None::<web_sys::HtmlSelectElement>);
+
+    // The browser snaps a select back to its first option when the bound
+    // value is applied before the matching option exists, which happens when
+    // loading a dataset sets both the label column options and the source in
+    // one update. Re-syncing the DOM value after renders keeps the displayed
+    // value honest.
+    use_effect(move || {
+        let source = color_source.read().clone();
+        // Subscribe to dataset changes too: they alter the option list.
+        let _ = dataset.read();
+        if let Some(select) = color_select() {
+            select.set_value(&source);
+        }
+    });
 
     // The active coloring, or an error when the value count does not match
     // the dataset. Recomputed on source, paste or dataset changes: recoloring
@@ -102,6 +118,14 @@ pub fn DecompositionExplorer(
             .ok()
             .and_then(|c| c.as_ref())
             .map(|c| c.colors.clone())
+    });
+    let markers = use_memo(move || {
+        coloring
+            .read()
+            .as_ref()
+            .ok()
+            .and_then(|c| c.as_ref())
+            .map(|c| c.markers.clone())
     });
 
     // A decomposition is in flight while the status reports progress.
@@ -236,6 +260,17 @@ pub fn DecompositionExplorer(
                                         Ok(bytes) => match parse_dataset(&url, &bytes) {
                                             Ok(parsed) => {
                                                 ingest_error.set(None);
+                                                // Examples ship curated label
+                                                // columns, color by the first
+                                                // one right away so the
+                                                // classes show without extra
+                                                // clicks.
+                                                if let Some(labels) =
+                                                    parsed.label_columns.first()
+                                                {
+                                                    color_source
+                                                        .set(format!("column:{}", labels.name));
+                                                }
                                                 dataset.set(Some(parsed));
                                             }
                                             Err(error) => {
@@ -364,6 +399,18 @@ pub fn DecompositionExplorer(
                     select {
                         id: "color-source",
                         value: "{color_source}",
+                        onmounted: move |evt| {
+                            color_select.set(
+                                evt.data()
+                                    .downcast::<web_sys::Element>()
+                                    .and_then(|element| {
+                                        element
+                                            .clone()
+                                            .dyn_into::<web_sys::HtmlSelectElement>()
+                                            .ok()
+                                    }),
+                            );
+                        },
                         onchange: move |evt| color_source.set(evt.value()),
                         option { value: "none", "none" }
                         if let Some(parsed) = dataset.read().as_ref() {
@@ -406,7 +453,8 @@ pub fn DecompositionExplorer(
                             span { class: "decompositions-legend-entry",
                                 span {
                                     class: "decompositions-legend-swatch",
-                                    style: "background: {entry.color};",
+                                    style: "color: {entry.color};",
+                                    "{entry.marker.glyph()}"
                                 }
                                 "{entry.label}"
                             }
@@ -417,7 +465,11 @@ pub fn DecompositionExplorer(
                     }
                 }
             }
-            ScatterPlot { embedding, colors: Some(colors.into()) }
+            ScatterPlot {
+                embedding,
+                colors: Some(colors.into()),
+                markers: Some(markers.into()),
+            }
         }
     }
 }

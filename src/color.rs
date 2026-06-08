@@ -1,8 +1,9 @@
-//! Mapping of label or score values to point colors.
+//! Mapping of label or score values to point colors and marker shapes.
 //!
 //! Values are treated as continuous when every entry parses as a float
-//! (viridis colormap) and as categorical otherwise (palette by distinct
-//! value). Recoloring is a pure redraw, the embedding is never recomputed.
+//! (viridis colormap, circles only) and as categorical otherwise (palette and
+//! marker shape by distinct value, so classes differ by shape as well as by
+//! color). Recoloring is a pure redraw, the embedding is never recomputed.
 
 /// The matplotlib tab10 palette, cycled when there are more categories.
 const PALETTE: [&str; 10] = [
@@ -44,6 +45,50 @@ pub enum ColorScale {
     Continuous,
 }
 
+/// The marker shape of a point, cycled per category so classes differ by
+/// shape as well as by color. With the 10 color palette the (color, marker)
+/// pairs stay distinct for 30 categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Marker {
+    /// A filled circle, also the shape of every continuous scale point.
+    #[default]
+    Circle,
+    /// A filled triangle pointing up.
+    Triangle,
+    /// A filled square.
+    Square,
+    /// A filled diamond.
+    Diamond,
+    /// A filled plus sign.
+    Plus,
+    /// A filled triangle pointing down.
+    TriangleDown,
+}
+
+/// Every marker in cycling order.
+pub(crate) const MARKERS: [Marker; 6] = [
+    Marker::Circle,
+    Marker::Triangle,
+    Marker::Square,
+    Marker::Diamond,
+    Marker::Plus,
+    Marker::TriangleDown,
+];
+
+impl Marker {
+    /// The unicode glyph of the marker, rendered in the legend.
+    pub fn glyph(self) -> char {
+        match self {
+            Marker::Circle => '\u{25CF}',       // ●
+            Marker::Triangle => '\u{25B2}',     // ▲
+            Marker::Square => '\u{25A0}',       // ■
+            Marker::Diamond => '\u{25C6}',      // ◆
+            Marker::Plus => '\u{271A}',         // ✚
+            Marker::TriangleDown => '\u{25BC}', // ▼
+        }
+    }
+}
+
 /// One legend entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegendEntry {
@@ -51,13 +96,18 @@ pub struct LegendEntry {
     pub label: String,
     /// CSS color of the entry.
     pub color: String,
+    /// Marker shape of the entry.
+    pub marker: Marker,
 }
 
-/// Colors assigned to a set of values.
+/// Colors and marker shapes assigned to a set of values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coloring {
     /// One CSS color per input value.
     pub colors: Vec<String>,
+    /// One marker shape per input value, cycled per category. Continuous
+    /// scales use circles throughout.
+    pub markers: Vec<Marker>,
     /// Legend describing the mapping: every category, or the extremes of the
     /// continuous scale.
     pub legend: Vec<LegendEntry>,
@@ -80,18 +130,21 @@ fn viridis(t: f32) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
-/// Maps values to point colors, auto detecting the scale.
+/// Maps values to point colors and marker shapes, auto detecting the scale.
 ///
 /// Continuous when every trimmed value parses as a float: finite values are
 /// normalized to the data range and quantized onto [`LEVELS`] viridis colors,
-/// non finite ones get a grey. Exception: all-integer sets with at most
-/// [`MAX_INTEGER_CATEGORIES`] distinct values are class indices and map to
-/// the palette in ascending order. Categorical otherwise: distinct values in
-/// first appearance order, palette cycled beyond its size.
+/// non finite ones get a grey, every point a circle. Exception: all-integer
+/// sets with at most [`MAX_INTEGER_CATEGORIES`] distinct values are class
+/// indices and map to the palette in ascending order. Categorical otherwise:
+/// distinct values in first appearance order, palette cycled beyond its size.
+/// Categories also cycle through the marker shapes so classes differ by shape
+/// as well as by color.
 pub fn colorize(values: &[String]) -> Coloring {
     if values.is_empty() {
         return Coloring {
             colors: Vec::new(),
+            markers: Vec::new(),
             legend: Vec::new(),
             scale: ColorScale::Categorical,
         };
@@ -111,12 +164,17 @@ pub fn colorize(values: &[String]) -> Coloring {
                 distinct.sort_unstable();
                 distinct.dedup();
                 if distinct.len() <= MAX_INTEGER_CATEGORIES {
-                    let colors = numbers
+                    let ranks: Vec<usize> = numbers
                         .iter()
-                        .map(|&v| {
-                            let rank = distinct.binary_search(&(v as i64)).unwrap();
-                            String::from(PALETTE[rank % PALETTE.len()])
-                        })
+                        .map(|&v| distinct.binary_search(&(v as i64)).unwrap())
+                        .collect();
+                    let colors = ranks
+                        .iter()
+                        .map(|&rank| String::from(PALETTE[rank % PALETTE.len()]))
+                        .collect();
+                    let markers = ranks
+                        .iter()
+                        .map(|&rank| MARKERS[rank % MARKERS.len()])
                         .collect();
                     let legend = distinct
                         .iter()
@@ -124,10 +182,12 @@ pub fn colorize(values: &[String]) -> Coloring {
                         .map(|(rank, value)| LegendEntry {
                             label: value.to_string(),
                             color: String::from(PALETTE[rank % PALETTE.len()]),
+                            marker: MARKERS[rank % MARKERS.len()],
                         })
                         .collect();
                     return Coloring {
                         colors,
+                        markers,
                         legend,
                         scale: ColorScale::Categorical,
                     };
@@ -160,15 +220,18 @@ pub fn colorize(values: &[String]) -> Coloring {
                     LegendEntry {
                         label: format!("{min}"),
                         color: viridis(0.0),
+                        marker: Marker::Circle,
                     },
                     LegendEntry {
                         label: format!("{max}"),
                         color: viridis(1.0),
+                        marker: Marker::Circle,
                     },
                 ]
             };
 
             Coloring {
+                markers: vec![Marker::Circle; numbers.len()],
                 colors,
                 legend,
                 scale: ColorScale::Continuous,
@@ -176,18 +239,25 @@ pub fn colorize(values: &[String]) -> Coloring {
         }
         None => {
             let mut categories: Vec<&str> = Vec::new();
-            let colors = values
+            let indices: Vec<usize> = values
                 .iter()
                 .map(|value| {
-                    let index = categories
+                    categories
                         .iter()
                         .position(|&c| c == value.as_str())
                         .unwrap_or_else(|| {
                             categories.push(value.as_str());
                             categories.len() - 1
-                        });
-                    String::from(PALETTE[index % PALETTE.len()])
+                        })
                 })
+                .collect();
+            let colors = indices
+                .iter()
+                .map(|&index| String::from(PALETTE[index % PALETTE.len()]))
+                .collect();
+            let markers = indices
+                .iter()
+                .map(|&index| MARKERS[index % MARKERS.len()])
                 .collect();
 
             let legend = categories
@@ -200,11 +270,13 @@ pub fn colorize(values: &[String]) -> Coloring {
                         String::from(category)
                     },
                     color: String::from(PALETTE[index % PALETTE.len()]),
+                    marker: MARKERS[index % MARKERS.len()],
                 })
                 .collect();
 
             Coloring {
                 colors,
+                markers,
                 legend,
                 scale: ColorScale::Categorical,
             }
@@ -214,7 +286,7 @@ pub fn colorize(values: &[String]) -> Coloring {
 
 #[cfg(test)]
 mod tests {
-    use super::{ColorScale, MISSING, colorize, viridis};
+    use super::{ColorScale, MARKERS, MISSING, Marker, colorize, viridis};
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| String::from(*v)).collect()
@@ -310,9 +382,43 @@ mod tests {
     }
 
     #[test]
+    fn categories_cycle_through_distinct_markers() {
+        let coloring = colorize(&strings(&["dog", "cat", "dog", "bird"]));
+
+        // Same category, same marker; different categories, different ones.
+        assert_eq!(coloring.markers[0], coloring.markers[2]);
+        assert_ne!(coloring.markers[0], coloring.markers[1]);
+        assert_ne!(coloring.markers[1], coloring.markers[3]);
+        // The legend carries the same markers as the points.
+        assert_eq!(coloring.legend[0].marker, coloring.markers[0]);
+        assert_eq!(coloring.legend[1].marker, coloring.markers[1]);
+    }
+
+    #[test]
+    fn integer_classes_cycle_through_distinct_markers() {
+        let values: Vec<String> = (0..100).map(|v| format!("{}", v % 10)).collect();
+        let coloring = colorize(&values);
+
+        assert_eq!(coloring.markers.len(), values.len());
+        assert_eq!(coloring.markers[0], coloring.markers[10]);
+        assert_ne!(coloring.markers[0], coloring.markers[1]);
+        // Ten digits over six shapes: the cycle wraps after the last marker.
+        assert_eq!(coloring.legend[0].marker, MARKERS[0]);
+        assert_eq!(coloring.legend[6].marker, MARKERS[0]);
+    }
+
+    #[test]
+    fn continuous_scales_use_circles_only() {
+        let coloring = colorize(&strings(&["0.5", "5.0", "10.5"]));
+        assert!(coloring.markers.iter().all(|&m| m == Marker::Circle));
+        assert!(coloring.legend.iter().all(|e| e.marker == Marker::Circle));
+    }
+
+    #[test]
     fn empty_input_yields_empty_coloring() {
         let coloring = colorize(&[]);
         assert!(coloring.colors.is_empty());
+        assert!(coloring.markers.is_empty());
         assert!(coloring.legend.is_empty());
     }
 

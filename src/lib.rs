@@ -51,7 +51,7 @@ mod worker;
 /// rules instead.
 pub const DEFAULT_STYLE: &str = include_str!("style.css");
 
-pub use color::{ColorScale, Coloring, LegendEntry, colorize};
+pub use color::{ColorScale, Coloring, LegendEntry, Marker, colorize};
 pub use components::{DecompositionExplorer, ExampleDataset};
 pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};

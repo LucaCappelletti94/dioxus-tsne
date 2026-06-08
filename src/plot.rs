@@ -6,6 +6,8 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+use crate::color::Marker;
+
 /// Maps a row major `n x 2` embedding into pixel coordinates fitting the
 /// viewport, preserving the aspect ratio of the embedding.
 ///
@@ -55,10 +57,50 @@ fn project_to_viewport(points: &[f32], width: f32, height: f32, margin: f32) -> 
 /// Default point color when no coloring is active.
 const DEFAULT_COLOR: &str = "rgba(31, 119, 180, 0.8)";
 
+/// Appends one marker outline at `(x, y)` to the current path.
+fn add_marker_to_path(context: &CanvasRenderingContext2d, marker: Marker, x: f64, y: f64, r: f64) {
+    match marker {
+        Marker::Circle => {
+            context.move_to(x + r, y);
+            let _ = context.arc(x, y, r, 0.0, std::f64::consts::TAU);
+        }
+        Marker::Triangle => {
+            // Vertices on the circumscribed circle so sizes match the circle.
+            context.move_to(x, y - r);
+            context.line_to(x + 0.866 * r, y + 0.5 * r);
+            context.line_to(x - 0.866 * r, y + 0.5 * r);
+            context.close_path();
+        }
+        Marker::Square => {
+            context.rect(x - r, y - r, 2.0 * r, 2.0 * r);
+        }
+        Marker::Diamond => {
+            context.move_to(x, y - r);
+            context.line_to(x + r, y);
+            context.line_to(x, y + r);
+            context.line_to(x - r, y);
+            context.close_path();
+        }
+        Marker::Plus => {
+            // Two overlapping bars, filled as one nonzero winding region.
+            let arm = 0.4 * r;
+            context.rect(x - r, y - arm, 2.0 * r, 2.0 * arm);
+            context.rect(x - arm, y - r, 2.0 * arm, 2.0 * r);
+        }
+        Marker::TriangleDown => {
+            context.move_to(x, y + r);
+            context.line_to(x + 0.866 * r, y - 0.5 * r);
+            context.line_to(x - 0.866 * r, y - 0.5 * r);
+            context.close_path();
+        }
+    }
+}
+
 fn draw(
     canvas: &HtmlCanvasElement,
     points: &[f32],
     colors: Option<&[String]>,
+    markers: Option<&[Marker]>,
     width: u32,
     height: u32,
 ) {
@@ -79,35 +121,34 @@ fn draw(
         return;
     }
 
-    // Points are batched per color into a single path each, so a coloring
-    // costs as many fills as there are distinct colors (the continuous scale
-    // is quantized for this very reason).
+    // Points are batched per (color, marker) into a single path each, so a
+    // coloring costs as many fills as there are distinct pairs (the
+    // continuous scale is quantized for this very reason).
     let colors = colors.filter(|c| c.len() == n);
-    let mut batches: Vec<(&str, Vec<usize>)> = Vec::new();
-    match colors {
-        Some(colors) => {
-            for (index, color) in colors.iter().enumerate() {
-                match batches.iter_mut().find(|(c, _)| c == color) {
-                    Some((_, indices)) => indices.push(index),
-                    None => batches.push((color, vec![index])),
-                }
-            }
+    let markers = markers.filter(|m| m.len() == n);
+    let mut batches: Vec<(&str, Marker, Vec<usize>)> = Vec::new();
+    for index in 0..n {
+        let color = colors.map_or(DEFAULT_COLOR, |c| c[index].as_str());
+        let marker = markers.map_or(Marker::Circle, |m| m[index]);
+        match batches
+            .iter_mut()
+            .find(|(c, m, _)| *c == color && *m == marker)
+        {
+            Some((_, _, indices)) => indices.push(index),
+            None => batches.push((color, marker, vec![index])),
         }
-        None => batches.push((DEFAULT_COLOR, (0..n).collect())),
     }
 
-    // Circles look better but cost a path arc each, rectangles keep huge
+    // Shaped markers look better but cost a path each, rectangles keep huge
     // embeddings fluid.
-    for (color, indices) in batches {
+    for (color, marker, indices) in batches {
         context.set_fill_style_str(color);
         if n <= 20_000 {
             const RADIUS: f64 = 3.0;
             context.begin_path();
             for &index in &indices {
                 let (x, y) = pixels[index];
-                let (x, y) = (f64::from(x), f64::from(y));
-                context.move_to(x + RADIUS, y);
-                let _ = context.arc(x, y, RADIUS, 0.0, std::f64::consts::TAU);
+                add_marker_to_path(&context, marker, f64::from(x), f64::from(y), RADIUS);
             }
             context.fill();
         } else {
@@ -128,12 +169,15 @@ fn draw(
 /// * `embedding` - the points to draw, cleared when `None`.
 /// * `colors` - optional CSS color per point, see [`crate::colorize`]. Points
 ///   fall back to a single default color when absent or of mismatched length.
+/// * `markers` - optional marker shape per point, see [`crate::colorize`].
+///   Points fall back to circles when absent or of mismatched length.
 /// * `width` - canvas width in pixels, defaults to 800.
 /// * `height` - canvas height in pixels, defaults to 600.
 #[component]
 pub fn ScatterPlot(
     embedding: ReadSignal<Option<Vec<f32>>>,
     #[props(default = None)] colors: Option<ReadSignal<Option<Vec<String>>>>,
+    #[props(default = None)] markers: Option<ReadSignal<Option<Vec<Marker>>>>,
     #[props(default = 800)] width: u32,
     #[props(default = 600)] height: u32,
 ) -> Element {
@@ -145,8 +189,16 @@ pub fn ScatterPlot(
             return;
         };
         let colors = colors.map(|c| c.read().clone()).unwrap_or_default();
+        let markers = markers.map(|m| m.read().clone()).unwrap_or_default();
         match embedding.read().as_ref() {
-            Some(points) => draw(&canvas, points, colors.as_deref(), width, height),
+            Some(points) => draw(
+                &canvas,
+                points,
+                colors.as_deref(),
+                markers.as_deref(),
+                width,
+                height,
+            ),
             None => {
                 if let Some(context) = canvas
                     .get_context("2d")
