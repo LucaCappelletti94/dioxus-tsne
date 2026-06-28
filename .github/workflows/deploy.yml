@@ -40,7 +40,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.1
 
       - uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y dioxus-cli@0.7.9
+      # --force: the rust-cache restore brings back binstall's install metadata
+      # but not the cached cargo bin, so a plain binstall sees dx as "already
+      # installed" and skips it, leaving `dx` off PATH. Reinstalling every run
+      # (a fast prebuilt download) keeps the binary present.
+      - run: cargo binstall -y --force dioxus-cli@0.7.9
 
       # DWARF off: dx defaults debug symbols on, which its wasm-opt cannot parse.
       - name: Bundle
