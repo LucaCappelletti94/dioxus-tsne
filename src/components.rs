@@ -1947,34 +1947,25 @@ fn DecompositionView(config: Decomposition) -> Element {
 
                         h3 { "Built in Rust" }
                         p {
-                            "This whole tool is Rust compiled to WebAssembly. There is no Python "
-                            "server and no JavaScript framework: the interface, the file parsing, "
-                            "and t-SNE itself all run in your browser."
+                            "This whole tool is "
+                            a { href: "https://www.rust-lang.org/what/wasm", target: "_blank", rel: "noopener", "Rust compiled to WebAssembly" }
+                            ", served as static files with no backend. The interface (rendered by "
+                            a { href: "https://dioxuslabs.com", target: "_blank", rel: "noopener", "Dioxus" }
+                            "), the file parsing, and "
+                            a { href: "https://github.com/frjnn/bhtsne", target: "_blank", rel: "noopener", "t-SNE" }
+                            " itself all run in your browser, so the data you load never leaves "
+                            "your machine."
                         }
                         p {
-                            "The optimizer runs in parallel across your CPU cores with Rayon, "
-                            "which now works in the browser through wasm-bindgen-rayon once the "
-                            "page is cross-origin isolated (the COOP and COEP headers). That is "
-                            "why the layout converges in seconds rather than minutes."
-                        }
-                        ul {
-                            li {
-                                a { href: "https://www.rust-lang.org/what/wasm", target: "_blank", rel: "noopener", "Rust and WebAssembly" }
-                            }
-                            li {
-                                a { href: "https://dioxuslabs.com", target: "_blank", rel: "noopener", "Dioxus" }
-                                ", the Rust UI framework rendering this page"
-                            }
-                            li {
-                                a { href: "https://github.com/rayon-rs/rayon", target: "_blank", rel: "noopener", "Rayon" }
-                                " with "
-                                a { href: "https://github.com/RReverser/wasm-bindgen-rayon", target: "_blank", rel: "noopener", "wasm-bindgen-rayon" }
-                                " for threads in the browser"
-                            }
-                            li {
-                                a { href: "https://github.com/frjnn/bhtsne", target: "_blank", rel: "noopener", "bhtsne" }
-                                ", the t-SNE implementation"
-                            }
+                            "t-SNE runs across all of your CPU cores at once with "
+                            a { href: "https://github.com/rayon-rs/rayon", target: "_blank", rel: "noopener", "Rayon" }
+                            ", which works in the browser through "
+                            a { href: "https://github.com/RReverser/wasm-bindgen-rayon", target: "_blank", rel: "noopener", "wasm-bindgen-rayon" }
+                            " once the page is cross-origin isolated (the "
+                            a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Opener-Policy", target: "_blank", rel: "noopener", "COOP" }
+                            " and "
+                            a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy", target: "_blank", rel: "noopener", "COEP" }
+                            " headers)."
                         }
                         p {
                             "Modern web development will be written in Rust. "

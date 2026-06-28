@@ -566,6 +566,9 @@ a.decompositions-iconbtn {
 .decompositions-about ul {
     margin: 0 0 0.8rem;
     font-size: 0.92rem;
+    text-align: justify;
+    overflow-wrap: break-word;
+    hyphens: auto;
 }
 
 .decompositions-about ul {
