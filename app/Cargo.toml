@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 console_error_panic_hook = "0.1"
 dioxus = { workspace = true, features = ["web"] }
-dioxus-decompositions = { path = ".." }
+dioxus-tsne = { path = ".." }
 
 [build-dependencies]
 # Runs wasm-bindgen as a library on the worker bundle, see build.rs. Must

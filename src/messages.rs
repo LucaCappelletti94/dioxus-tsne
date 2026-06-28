@@ -4,6 +4,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::ingest::Dataset;
 
+/// Which phase of a t-SNE run is currently executing, reported to the UI so the
+/// status line and progress bar can name what the worker is doing.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TsnePhase {
+    /// Building the affinity graph: the vantage point tree neighbor search and
+    /// the perplexity calibration, before any optimization epoch runs.
+    FindingNeighbors,
+    /// The early-exaggeration epochs, where the `P` distribution is inflated to
+    /// pull clusters apart before the layout settles.
+    EarlyExaggeration,
+    /// The main optimization, after early exaggeration has stopped.
+    Optimizing,
+}
+
+impl TsnePhase {
+    /// Human readable label shown in the UI status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            TsnePhase::FindingNeighbors => "Finding neighbors",
+            TsnePhase::EarlyExaggeration => "Early exaggeration",
+            TsnePhase::Optimizing => "Optimizing",
+        }
+    }
+}
+
 /// Parameters of the Barnes-Hut t-SNE decomposition.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct TsneParams {
@@ -22,6 +47,17 @@ pub struct TsneParams {
     /// fitting, the standard recipe uses 50. The reduction is skipped when
     /// the input dimensionality is already lower.
     pub pca_dims: usize,
+    /// Multiplier applied to the `P` distribution during early exaggeration,
+    /// which pulls clusters apart before the layout settles. bhtsne's default
+    /// is 12, a value of 1 disables exaggeration. Ignored on a warm start,
+    /// which keeps the seeded layout intact.
+    #[serde(default = "default_early_exaggeration")]
+    pub early_exaggeration: f32,
+    /// Number of early-exaggeration epochs (bhtsne's `stop_lying_epoch`), also
+    /// the boundary the status line uses to switch from early exaggeration to
+    /// optimizing. 0 disables exaggeration. Ignored on a warm start.
+    #[serde(default = "default_early_exaggeration_epochs")]
+    pub early_exaggeration_epochs: usize,
     /// Send an embedding snapshot to the UI every this many epochs.
     pub snapshot_every: usize,
     /// Row major `n_samples * 2` embedding to warm start the fit from,
@@ -29,6 +65,17 @@ pub struct TsneParams {
     /// early exaggeration is disabled so the seeded layout is not re-shocked.
     #[serde(default)]
     pub initial_embedding: Option<Vec<f32>>,
+}
+
+/// Default early-exaggeration factor, matching bhtsne.
+fn default_early_exaggeration() -> f32 {
+    12.0
+}
+
+/// Default early-exaggeration duration in epochs, matching bhtsne's
+/// `stop_lying_epoch`.
+fn default_early_exaggeration_epochs() -> usize {
+    250
 }
 
 impl Default for TsneParams {
@@ -39,19 +86,21 @@ impl Default for TsneParams {
             epochs: 1000,
             learning_rate: None,
             pca_dims: 50,
+            early_exaggeration: default_early_exaggeration(),
+            early_exaggeration_epochs: default_early_exaggeration_epochs(),
             snapshot_every: 5,
             initial_embedding: None,
         }
     }
 }
 
-/// The decomposition to run.
+/// The decomposition to run. Only Barnes-Hut t-SNE (with PCA preprocessing) is
+/// offered; kept as an enum so the worker request stays stable if more methods
+/// return later.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum DecompositionMethod {
     /// Barnes-Hut t-SNE through bhtsne, with PCA preprocessing.
     Tsne(TsneParams),
-    /// Plain PCA projection onto the top two components.
-    Pca,
 }
 
 /// Request sent from the UI to the decomposition worker.
@@ -95,29 +144,38 @@ pub enum WorkerResponse {
         /// Human readable reason.
         message: String,
     },
+    /// The run entered a phase that produces no embedding yet, currently only
+    /// the neighbor search. Lets the UI name the long affinity-build step
+    /// instead of showing a bare spinner.
+    Phase {
+        /// The phase the worker just entered.
+        phase: TsnePhase,
+    },
     /// Intermediate embedding, sent every `snapshot_every` epochs.
     Snapshot {
         /// Zero based epoch index the snapshot was taken at.
         epoch: usize,
         /// Row major embedding, `n_samples * 2` long.
         embedding: Vec<f32>,
+        /// Which optimization phase this epoch belongs to.
+        phase: TsnePhase,
         /// Milliseconds elapsed since the run started, measured in the worker.
         elapsed_ms: f64,
-        /// Size of rayon's global thread pool in the worker, 1 when the worker
-        /// runs single threaded.
+        /// Size of rayon's global thread pool in the worker, 1 when the page is
+        /// not cross-origin isolated and the pool could not start.
         threads: usize,
     },
     /// The decomposition finished.
     Done {
         /// Row major final embedding, `n_samples * 2` long.
         embedding: Vec<f32>,
-        /// Fraction of the total variance captured by each output dimension,
-        /// reported by the PCA method only.
-        explained_variance_ratio: Option<Vec<f32>>,
+        /// Final KL divergence of the t-SNE fit, a quality metric (lower is a
+        /// better embedding).
+        kl_divergence: Option<f32>,
         /// Milliseconds the whole run took, measured in the worker.
         elapsed_ms: f64,
-        /// Size of rayon's global thread pool in the worker, 1 when the worker
-        /// runs single threaded.
+        /// Size of rayon's global thread pool in the worker, 1 when the page is
+        /// not cross-origin isolated and the pool could not start.
         threads: usize,
     },
     /// The decomposition could not run.

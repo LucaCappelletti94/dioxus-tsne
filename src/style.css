@@ -1,234 +1,59 @@
-/* Default theme of the dioxus-decompositions components. Scoped under the
-   .decompositions-explorer class so it composes with any host page. Consumers
-   can disable it through the `styled` prop and bring their own rules. */
+/* Full-bleed, minimal, black-and-white t-SNE explorer. The plot fills the
+   viewport; chrome (top bar, transport, sidebar) floats over it. Scoped under
+   .decompositions-explorer. Data point colors come from the palette, only the
+   chrome is monochrome. */
 
 .decompositions-explorer {
-    --decompositions-accent: #1f77b4;
-    --decompositions-accent-strong: #16608f;
-    --decompositions-bg: #ffffff;
-    --decompositions-surface: #f7f8fa;
-    --decompositions-border: #d8dde3;
-    --decompositions-text: #1c2733;
-    --decompositions-muted: #5d6b7a;
-    --decompositions-error: #c0392b;
+    --ddx-bg: #ffffff;
+    --ddx-ink: #0a0a0a;
+    --ddx-muted: rgba(10, 10, 10, 0.55);
+    --ddx-line: rgba(10, 10, 10, 0.16);
+    --ddx-panel: rgba(255, 255, 255, 0.92);
+    --ddx-hover: rgba(10, 10, 10, 0.06);
 
+    position: fixed;
+    inset: 0;
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    color: var(--decompositions-text);
-    display: block;
-    max-width: 56rem;
+    color: var(--ddx-ink);
+    background: var(--ddx-bg);
+    overflow: hidden;
 }
 
 @media (prefers-color-scheme: dark) {
     .decompositions-explorer {
-        --decompositions-accent: #4da3d8;
-        --decompositions-accent-strong: #74b9e3;
-        --decompositions-bg: #14181d;
-        --decompositions-surface: #1c2229;
-        --decompositions-border: #323a44;
-        --decompositions-text: #e7ecf1;
-        --decompositions-muted: #9aa7b4;
-        --decompositions-error: #e07b6e;
+        --ddx-bg: #0a0a0a;
+        --ddx-ink: #f4f4f4;
+        --ddx-muted: rgba(244, 244, 244, 0.6);
+        --ddx-line: rgba(244, 244, 244, 0.2);
+        --ddx-panel: rgba(18, 18, 18, 0.92);
+        --ddx-hover: rgba(244, 244, 244, 0.08);
     }
 }
 
-/* The whole component is one panel: a toolbar on top of the plot. */
-.decompositions-panel {
-    position: relative;
-    border: 1px solid var(--decompositions-border);
-    border-radius: 10px;
-    background: var(--decompositions-bg);
-    overflow: hidden;
+.decompositions-explorer *,
+.decompositions-explorer *::before,
+.decompositions-explorer *::after {
+    box-sizing: border-box;
 }
 
-.decompositions-toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.7rem;
-    background: var(--decompositions-surface);
-    border-bottom: 1px solid var(--decompositions-border);
-    position: relative;
-    z-index: 2;
-}
-
-/* Font Awesome icons inherit the surrounding text color (fill currentColor)
-   and never shrink in the flex rows of buttons, labels and the status line. */
-.decompositions-explorer .decompositions-icon {
+.decompositions-icon {
     flex-shrink: 0;
-    opacity: 0.85;
 }
 
-.decompositions-explorer button {
-    font: inherit;
-    font-size: 0.88rem;
-    padding: 0.4rem 0.85rem;
-    border: none;
-    border-radius: 7px;
-    background: var(--decompositions-accent);
-    color: #ffffff;
-    cursor: pointer;
-    transition: background 0.15s ease;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-}
-
-.decompositions-explorer button:hover:not(:disabled) {
-    background: var(--decompositions-accent-strong);
-}
-
-.decompositions-explorer button:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-}
-
-.decompositions-explorer input,
-.decompositions-explorer select {
-    font: inherit;
-    font-size: 0.88rem;
-    color: var(--decompositions-text);
-    background: var(--decompositions-bg);
-    border: 1px solid var(--decompositions-border);
-    border-radius: 7px;
-    padding: 0.35rem 0.5rem;
-}
-
-.decompositions-explorer input[type="number"] {
-    width: 5.5rem;
-}
-
-.decompositions-status {
-    margin: 0 0 0 auto;
-    font-size: 0.82rem;
-    font-variant-numeric: tabular-nums;
-    color: var(--decompositions-muted);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-}
-
-/* The clear/reset button is a subtle icon button at the toolbar's right end,
-   turning red on hover to signal it discards the current data and result. */
-.decompositions-explorer .decompositions-clear {
-    background: transparent;
-    color: var(--decompositions-muted);
-    border: 1px solid var(--decompositions-border);
-    padding: 0.3rem 0.4rem;
-}
-
-.decompositions-explorer .decompositions-clear:hover:not(:disabled) {
-    background: transparent;
-    color: var(--decompositions-error);
-    border-color: var(--decompositions-error);
-}
-
-/* Advanced settings live in a popover dropped from a gear button so the
-   toolbar stays compact. */
-.decompositions-settings {
-    position: relative;
-}
-
-.decompositions-settings-summary {
-    list-style: none;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.35rem 0.45rem;
-    border-radius: 7px;
-    color: var(--decompositions-muted);
-    border: 1px solid var(--decompositions-border);
-    background: var(--decompositions-bg);
-}
-
-.decompositions-settings-summary::-webkit-details-marker {
-    display: none;
-}
-
-.decompositions-settings[open] > .decompositions-settings-summary {
-    color: var(--decompositions-accent-strong);
-    border-color: var(--decompositions-accent);
-}
-
-.decompositions-settings-panel {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 5;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    min-width: 13rem;
-    padding: 0.7rem 0.8rem;
-    background: var(--decompositions-surface);
-    border: 1px solid var(--decompositions-border);
-    border-radius: 9px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-}
-
-.decompositions-settings-panel label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.6rem;
-    font-size: 0.83rem;
-    color: var(--decompositions-muted);
-}
-
-.decompositions-settings-panel input[type="number"] {
-    width: 5rem;
-}
-
-/* Loading bar shown while a run is in flight: a thin strip below the toolbar,
-   indeterminate during the fetch / affinity setup, then filling with the epoch
-   progress. */
-.decompositions-progress {
-    height: 3px;
-    background: var(--decompositions-border);
-    overflow: hidden;
-    position: relative;
-}
-
-.decompositions-progress-fill {
-    height: 100%;
-    width: 0;
-    background: var(--decompositions-accent);
-    transition: width 0.2s ease;
-}
-
-.decompositions-progress-fill--indeterminate {
-    width: 35%;
-    position: absolute;
-    left: -35%;
-    animation: decompositions-indeterminate 1.1s ease-in-out infinite;
-}
-
-@keyframes decompositions-indeterminate {
-    0% {
-        left: -35%;
-    }
-    100% {
-        left: 100%;
-    }
-}
-
-/* The plot fills the panel below the toolbar, with overlays on top of it. */
+/* The plot fills the whole viewport. */
 .decompositions-plot-area {
-    position: relative;
-    line-height: 0;
+    position: absolute;
+    inset: 0;
 }
 
 .decompositions-plot {
     display: block;
     width: 100%;
-    height: auto;
-    background: var(--decompositions-bg);
+    height: 100%;
+    background: var(--ddx-bg);
 }
 
 .decompositions-plot--draggable {
-    /* Suppress touch scrolling/gestures over the plot so a drag stays a drag. */
     touch-action: none;
     cursor: grab;
 }
@@ -237,79 +62,286 @@
     cursor: grabbing;
 }
 
-/* Empty state over the plot: the drag and drop (and click to browse) loader,
-   the example dataset buttons and any ingestion error. */
+/* Top bar: brand/logo left, gear right, transparent over the plot. */
+.decompositions-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.8rem 1rem;
+    pointer-events: none;
+    /* Above the sidebar (z 6) so the gear stays clickable to toggle it shut. */
+    z-index: 7;
+}
+
+.decompositions-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    pointer-events: auto;
+}
+
+.decompositions-brand img {
+    height: 2.2rem;
+    width: auto;
+    display: block;
+}
+
+/* The cluster of top-right controls (help, repo, gear). */
+.decompositions-topbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    pointer-events: auto;
+}
+
+a.decompositions-iconbtn {
+    text-decoration: none;
+    color: var(--ddx-ink);
+}
+
+/* The logo is a solid black mark; invert it to read on a dark background. */
+@media (prefers-color-scheme: dark) {
+    .decompositions-logo {
+        filter: invert(1);
+    }
+}
+
+/* Round icon buttons (gear, transport controls). */
+.decompositions-iconbtn {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.1rem;
+    height: 2.1rem;
+    padding: 0;
+    border: 1px solid var(--ddx-line);
+    border-radius: 50%;
+    background: var(--ddx-panel);
+    color: var(--ddx-ink);
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        opacity 0.15s ease;
+}
+
+.decompositions-iconbtn:hover:not(:disabled) {
+    background: var(--ddx-hover);
+}
+
+.decompositions-iconbtn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* The settings gear needs no chrome, the icon alone reads as a button. */
+.decompositions-topbar .decompositions-iconbtn {
+    border: none;
+    background: transparent;
+}
+
+.decompositions-topbar .decompositions-iconbtn:hover:not(:disabled) {
+    background: transparent;
+    opacity: 0.6;
+}
+
+/* Thin progress bar pinned to the very top edge of the viewport. */
+.decompositions-progress {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    overflow: hidden;
+    z-index: 5;
+}
+
+.decompositions-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--ddx-ink);
+    transition: width 0.2s ease;
+}
+
+.decompositions-progress-fill--indeterminate {
+    width: 30%;
+    position: absolute;
+    left: -30%;
+    animation: decompositions-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes decompositions-indeterminate {
+    0% {
+        left: -30%;
+    }
+    100% {
+        left: 100%;
+    }
+}
+
+/* Bottom-center media-player transport bar. */
+.decompositions-transport {
+    position: absolute;
+    bottom: 1.1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.7rem;
+    background: var(--ddx-panel);
+    border: 1px solid var(--ddx-line);
+    border-radius: 999px;
+    backdrop-filter: blur(8px);
+    z-index: 4;
+    max-width: calc(100vw - 2rem);
+}
+
+.decompositions-transport .decompositions-iconbtn {
+    border: none;
+    background: transparent;
+    width: 1.9rem;
+    height: 1.9rem;
+}
+
+.decompositions-transport .decompositions-iconbtn:hover:not(:disabled) {
+    background: var(--ddx-hover);
+}
+
+/* While recording, the REC control is unmistakably live: solid red and
+   blinking. (The one intentional break from the monochrome palette.) */
+.decompositions-rec--active,
+.decompositions-rec--active:hover:not(:disabled) {
+    color: #e5102d;
+    background: transparent;
+    animation: decompositions-blink 1s steps(1, end) infinite;
+}
+
+@keyframes decompositions-blink {
+    50% {
+        opacity: 0.2;
+    }
+}
+
+.decompositions-scrubber {
+    position: relative;
+    width: clamp(7rem, 20vw, 16rem);
+    height: 3px;
+    background: var(--ddx-line);
+    border-radius: 2px;
+    overflow: hidden;
+    flex: none;
+}
+
+.decompositions-scrubber-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 0;
+    background: var(--ddx-ink);
+    transition: width 0.2s ease;
+}
+
+.decompositions-scrubber-fill--indeterminate {
+    width: 30%;
+    animation: decompositions-indeterminate 1.1s ease-in-out infinite;
+}
+
+.decompositions-status {
+    font-size: 0.78rem;
+    color: var(--ddx-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 16rem;
+}
+
+.decompositions-select {
+    font: inherit;
+    font-size: 0.82rem;
+    color: var(--ddx-ink);
+    background: transparent;
+    border: 1px solid var(--ddx-line);
+    border-radius: 999px;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+}
+
+/* Empty state: covers the page (the whole page is the drop target), with the
+   example buttons and a drop hint centered. */
 .decompositions-empty {
     position: absolute;
     inset: 0;
-    margin: 10px;
+    z-index: 3;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1.1rem;
-    padding: 1.2rem;
+    gap: 1.4rem;
+    padding: 2rem;
     text-align: center;
-    line-height: 1.4;
-    border: 2px dashed var(--decompositions-border);
-    border-radius: 10px;
-    color: var(--decompositions-muted);
-    transition:
-        border-color 0.15s ease,
-        background 0.15s ease,
-        color 0.15s ease;
+    color: var(--ddx-muted);
+    transition: background 0.15s ease;
 }
 
 .decompositions-empty--over {
-    border-color: var(--decompositions-accent);
-    color: var(--decompositions-accent-strong);
-    background: color-mix(in srgb, var(--decompositions-accent) 8%, transparent);
-}
-
-.decompositions-droplabel {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-    font-size: 0.95rem;
-    color: inherit;
-}
-
-.decompositions-droplabel .decompositions-icon {
-    opacity: 0.6;
-}
-
-/* The browse input is hidden, the drop label opens the picker through `for`. */
-.decompositions-fileinput {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+    background: var(--ddx-hover);
 }
 
 .decompositions-examples {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 0.6rem;
 }
 
-/* Shown in place of the prompt and example buttons while a dataset loads. */
+.decompositions-example {
+    font: inherit;
+    font-size: 0.9rem;
+    color: var(--ddx-ink);
+    background: transparent;
+    border: 1px solid var(--ddx-line);
+    border-radius: 999px;
+    padding: 0.45rem 1.1rem;
+    cursor: pointer;
+    transition: background 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.decompositions-example:hover {
+    background: var(--ddx-hover);
+}
+
+.decompositions-drophint {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
 .decompositions-loading {
     display: inline-flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.6rem;
-    font-size: 0.95rem;
-    color: inherit;
+    gap: 0.7rem;
+    font-size: 0.9rem;
+    color: var(--ddx-ink);
 }
 
 .decompositions-spinner {
     animation: decompositions-spin 0.8s linear infinite;
-    opacity: 0.7;
 }
 
 @keyframes decompositions-spin {
@@ -319,32 +351,42 @@
 }
 
 .decompositions-error {
-    margin: 0;
-    font-size: 0.88rem;
-    color: var(--decompositions-error);
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--ddx-ink);
 }
 
-/* The legend floats over a bottom corner of the plot, not blocking the points
-   beneath it. */
+/* Hidden file input opened by the drop hint's label. */
+.decompositions-fileinput {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+/* Legend overlay, lower-left, above the transport bar. Keeps data colors. */
 .decompositions-legend {
     position: absolute;
-    left: 12px;
-    bottom: 12px;
-    max-width: calc(100% - 24px);
+    left: 1rem;
+    bottom: 4.6rem;
+    max-width: calc(100% - 2rem);
     display: flex;
     flex-wrap: wrap;
     gap: 0.25rem 0.8rem;
     padding: 0.5rem 0.7rem;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     line-height: 1.2;
-    color: var(--decompositions-text);
-    background: color-mix(in srgb, var(--decompositions-surface) 88%, transparent);
-    border: 1px solid var(--decompositions-border);
+    color: var(--ddx-ink);
+    background: var(--ddx-panel);
+    border: 1px solid var(--ddx-line);
     border-radius: 8px;
     pointer-events: none;
+    z-index: 3;
 }
 
 .decompositions-legend-entry {
@@ -354,8 +396,6 @@
 }
 
 .decompositions-legend-swatch {
-    /* A colored marker glyph in a fixed width box, centered, so the differing
-       widths of the marker shapes do not knock the entries out of alignment. */
     font-size: 1.1em;
     line-height: 1;
     display: inline-block;
@@ -364,50 +404,209 @@
     flex: none;
 }
 
-/* Recording indicator: a red badge shown in the toolbar while recording. */
-.decompositions-recording {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    color: #dc3545;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    padding: 0.15rem 0.4rem;
-    border-radius: 0.25rem;
-    background: #dc35451a;
+/* Right settings sidebar, slides in when the gear is toggled. */
+.decompositions-sidebar {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(21rem, 88vw);
+    background: var(--ddx-bg);
+    border-left: 1px solid var(--ddx-line);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding: 3.4rem 1.1rem 1.2rem;
+    overflow-y: auto;
 }
 
-@media (prefers-color-scheme: dark) {
-    .decompositions-recording {
-        background: #dc354526;
+.decompositions-sidebar--open {
+    transform: translateX(0);
+}
+
+.decompositions-section-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ddx-muted);
+    margin: 0.3rem 0 0;
+}
+
+.decompositions-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.83rem;
+    color: var(--ddx-muted);
+}
+
+/* Icon + name on the left of a settings field, kept together as one group. */
+.decompositions-field-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.decompositions-field input[type="number"] {
+    font: inherit;
+    font-size: 0.83rem;
+    width: 5rem;
+    color: var(--ddx-ink);
+    background: transparent;
+    border: 1px solid var(--ddx-line);
+    border-radius: 6px;
+    padding: 0.3rem 0.4rem;
+}
+
+.decompositions-field input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--ddx-ink);
+}
+
+/* Column-role list: one row per column with a Feature/Label/Ignore selector. */
+.decompositions-columns {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 14rem;
+    overflow-y: auto;
+    border: 1px solid var(--ddx-line);
+    border-radius: 7px;
+    padding: 0.4rem;
+}
+
+.decompositions-column-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.decompositions-column-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.decompositions-column-row select {
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--ddx-ink);
+    background: transparent;
+    border: 1px solid var(--ddx-line);
+    border-radius: 5px;
+    padding: 0.15rem 0.3rem;
+}
+
+/* In-app "About t-SNE" overlay, animated in over the plot. */
+.decompositions-about-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    background: color-mix(in srgb, var(--ddx-ink) 32%, transparent);
+    animation: decompositions-fade-in 0.18s ease;
+}
+
+.decompositions-about {
+    position: relative;
+    max-width: 40rem;
+    max-height: 85vh;
+    overflow-y: auto;
+    background: var(--ddx-bg);
+    color: var(--ddx-ink);
+    border: 1px solid var(--ddx-line);
+    border-radius: 12px;
+    padding: 1.8rem 2rem 2rem;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+    line-height: 1.6;
+    animation: decompositions-about-in 0.22s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+@keyframes decompositions-fade-in {
+    from {
+        opacity: 0;
     }
 }
 
-/* Checkbox in the settings panel for recording. */
-.decompositions-settings-panel input[type="checkbox"] {
-    width: 1rem;
-    height: 1rem;
-    margin-left: 0.5rem;
-    accent-color: var(--decompositions-accent);
+@keyframes decompositions-about-in {
+    from {
+        opacity: 0;
+        transform: translateY(14px) scale(0.98);
+    }
 }
 
-/* Download button shown once a recording has finished, in place of the badge. */
-.decompositions-download {
+.decompositions-about h2 {
+    font-size: 1.5rem;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.1rem;
+}
+
+.decompositions-about h3 {
+    font-size: 1rem;
+    margin: 1.4rem 0 0.4rem;
+}
+
+.decompositions-about-sub {
+    color: var(--ddx-muted);
+    margin: 0 0 0.5rem;
+}
+
+.decompositions-about p,
+.decompositions-about ul {
+    margin: 0 0 0.8rem;
+    font-size: 0.92rem;
+}
+
+.decompositions-about ul {
+    padding-left: 1.2rem;
+}
+
+.decompositions-about li {
+    margin: 0.3rem 0;
+}
+
+.decompositions-about a {
+    color: inherit;
+}
+
+.decompositions-about-refs {
+    font-size: 0.85rem;
+    color: var(--ddx-muted);
+    padding-left: 1.3rem;
+}
+
+.decompositions-about-refs li {
+    margin: 0.5rem 0;
+}
+
+.decompositions-about-close {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    width: 2rem;
+    height: 2rem;
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    padding: 0.2rem 0.5rem;
-    border: 1px solid var(--decompositions-accent);
-    border-radius: 0.3rem;
-    color: var(--decompositions-accent-strong);
-    background: color-mix(in srgb, var(--decompositions-accent) 12%, transparent);
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ddx-muted);
     cursor: pointer;
 }
 
-.decompositions-download:hover {
-    background: color-mix(in srgb, var(--decompositions-accent) 22%, transparent);
+.decompositions-about-close:hover {
+    background: var(--ddx-hover);
+    color: var(--ddx-ink);
 }

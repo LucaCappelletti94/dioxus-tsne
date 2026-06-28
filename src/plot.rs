@@ -365,6 +365,12 @@ pub fn ScatterPlot(
     let buffer_width = (f64::from(width) * ratio).round() as u32;
     let buffer_height = (f64::from(height) * ratio).round() as u32;
 
+    // `width`/`height` are plain props, not signals, so the redraw effect below
+    // would not re-run when the viewport (and thus the canvas size) changes,
+    // leaving the resized canvas blank. Funnel them through a memo the effect
+    // reads, so a resize repaints at the new size.
+    let size = use_memo(use_reactive!(|(width, height)| (width, height)));
+
     let mut canvas = use_signal(|| None::<HtmlCanvasElement>);
     let mut drag = use_signal(|| None::<DragState>);
     // The transform of the last draw, so pointer handlers hit-test and
@@ -377,6 +383,9 @@ pub fn ScatterPlot(
     // dragged point moves; clearing the drag refits once at release.
     let redraw_transform = last_transform.clone();
     use_effect(move || {
+        // Read the size first so a resize is always a dependency, even before
+        // the canvas has mounted.
+        let (width, height) = size();
         let Some(canvas) = canvas() else {
             return;
         };

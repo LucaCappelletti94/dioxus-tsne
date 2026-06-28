@@ -16,12 +16,12 @@ serde = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 
 [package]
-name = "dioxus-decompositions"
+name = "dioxus-tsne"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Dioxus components to run and visualize decompositions like t-SNE, PCA and more, off the main thread in a web worker"
+description = "Dioxus + WebAssembly components to run and visualize Barnes-Hut t-SNE in the browser, off the main thread in a web worker"
 readme = "README.md"
 keywords = ["dioxus", "tsne", "pca", "visualization", "wasm"]
 categories = ["visualization", "wasm", "gui"]
@@ -47,7 +47,10 @@ bhtsne = { git = "https://github.com/frjnn/bhtsne", default-features = false, fe
 bytes = { version = "1", optional = true }
 csv = "1"
 dioxus.workspace = true
-dioxus-free-icons = { version = "0.10.0", default-features = false, features = ["font-awesome-solid"] }
+dioxus-free-icons = { version = "0.10.0", default-features = false, features = [
+    "font-awesome-solid",
+    "font-awesome-brands",
+] }
 gloo-net = { version = "0.7.0", default-features = false, features = ["http"] }
 gloo-worker.workspace = true
 js-sys = "0.3"

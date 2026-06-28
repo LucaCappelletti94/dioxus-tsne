@@ -1,6 +1,6 @@
 //! Tests for the file ingestion module.
 
-use dioxus_decompositions::{Dataset, IngestError, parse_dataset};
+use dioxus_tsne::{Dataset, IngestError, parse_dataset};
 
 #[test]
 fn csv_with_header_and_label_column() {

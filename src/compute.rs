@@ -9,8 +9,8 @@ use crate::pca::pca;
 pub struct DecomposeOutput {
     /// Row major embedding, `n_samples * 2` long.
     pub embedding: Vec<f32>,
-    /// Explained variance ratios when the method was PCA.
-    pub explained_variance_ratio: Option<Vec<f32>>,
+    /// Final KL divergence of the t-SNE fit.
+    pub kl_divergence: Option<f32>,
 }
 
 /// Identifies the affinity graph of a t-SNE run. The `P` distribution depends
@@ -97,18 +97,6 @@ where
     }
 
     match method {
-        DecompositionMethod::Pca => {
-            let result = pca(data, n_samples, n_features, 2);
-            if result.n_components < 2 {
-                return Err(String::from(
-                    "PCA to two dimensions needs at least two features",
-                ));
-            }
-            Ok(DecomposeOutput {
-                embedding: result.data,
-                explained_variance_ratio: Some(result.explained_variance_ratio),
-            })
-        }
         DecompositionMethod::Tsne(params) => {
             tsne(data, n_samples, n_features, params, cache, snapshot)
         }
@@ -179,14 +167,28 @@ where
     if let Some(learning_rate) = params.learning_rate {
         fit.learning_rate(learning_rate);
     }
-    // Warm start: seed the embedding and continue optimizing instead of
-    // restarting from noise. Early exaggeration would pull the seeded layout
-    // back together, so it is disabled, and the momentum jumps straight to
-    // the final value a converged run was already using.
+    // Apply the early-exaggeration controls. Setting them explicitly (rather
+    // than leaning on bhtsne's defaults) also lets the worker label the phase
+    // from the epoch index alone. A warm start overrides the duration to 0
+    // below, since exaggeration would re-shock the seeded layout.
+    fit.early_exaggeration(params.early_exaggeration)
+        .stop_lying_epoch(params.early_exaggeration_epochs);
     if let Some(init) = &params.initial_embedding {
+        // Warm start: seed the embedding and continue optimizing instead of
+        // restarting. Early exaggeration would pull the seeded layout back
+        // together, so it is disabled, and the momentum jumps straight to the
+        // final value a converged run was already using.
         fit.initial_embedding(init.clone())
             .stop_lying_epoch(0)
             .momentum_switch_epoch(0);
+    } else {
+        // Fresh run: initialize from the top two principal components rather
+        // than from random noise. PCA initialization preserves the global
+        // structure of the data far better and makes runs reproducible
+        // (Kobak & Berens 2019, Kobak & Linderman 2021). Early exaggeration is
+        // left on, as recommended. The seed is scaled to a standard deviation
+        // of 1e-4 on the first axis, matching bhtsne's random-init magnitude.
+        fit.initial_embedding(pca_initialization(data, n_samples, n_features));
     }
 
     // Reuse the cached affinity graph on a warm-start continuation of the same
@@ -203,6 +205,8 @@ where
         fit.with_affinities(affinities);
     }
 
+    // A reused affinity graph short-circuits the neighbor search inside bhtsne,
+    // so this only rebuilds the vantage point tree when the graph is not cached.
     fit.barnes_hut(params.theta, |a, b| {
         a.iter()
             .zip(b.iter())
@@ -217,10 +221,44 @@ where
         cache.entry = Some((key, affinities));
     }
 
+    let kl_divergence = fit.kl_divergence();
     Ok(DecomposeOutput {
         embedding: fit.embedding(),
-        explained_variance_ratio: None,
+        kl_divergence,
     })
+}
+
+/// Builds a t-SNE initialization from the top two principal components of the
+/// (already PCA-reduced) data, scaled so the first axis has a standard deviation
+/// of 1e-4, matching bhtsne's random-init magnitude. Returns a row-major
+/// `n_samples * 2` seed. PCA initialization preserves global structure and makes
+/// runs reproducible (Kobak & Berens 2019, Kobak & Linderman 2021).
+fn pca_initialization(data: &[f32], n_samples: usize, n_features: usize) -> Vec<f32> {
+    let result = pca(data, n_samples, n_features, 2);
+    let components = result.n_components.max(1);
+    let mut init = vec![0.0f32; n_samples * 2];
+    for row in 0..n_samples {
+        for col in 0..2.min(components) {
+            init[row * 2 + col] = result.data[row * components + col];
+        }
+    }
+    // Scale so the first axis has standard deviation 1e-4, keeping the PC1:PC2
+    // ratio (both axes share one factor).
+    let mean = init.iter().step_by(2).sum::<f32>() / n_samples as f32;
+    let variance = init
+        .iter()
+        .step_by(2)
+        .map(|&value| (value - mean) * (value - mean))
+        .sum::<f32>()
+        / n_samples as f32;
+    let std = variance.sqrt();
+    if std > 0.0 {
+        let scale = 1e-4 / std;
+        for value in &mut init {
+            *value *= scale;
+        }
+    }
+    init
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@
 //! 1. Adds a worker binary crate registering [`DecompositionWorker`]:
 //!
 //! ```ignore
-//! use dioxus_decompositions::DecompositionWorker;
+//! use dioxus_tsne::DecompositionWorker;
 //! use gloo_worker::Registrable;
 //!
 //! fn main() {
@@ -38,7 +38,7 @@
 //!    features it wants:
 //!
 //! ```ignore
-//! use dioxus_decompositions::Decomposition;
+//! use dioxus_tsne::Decomposition;
 //!
 //! Decomposition::new()
 //!     .drop_zone()
@@ -67,7 +67,7 @@ mod worker;
 pub const DEFAULT_STYLE: &str = include_str!("style.css");
 
 pub use color::{ColorScale, Coloring, LegendEntry, Marker, colorize};
-pub use components::{DEFAULT_WORKER_URL, Decomposition, DropZone, ExampleDataset};
+pub use components::{DEFAULT_WORKER_URL, Decomposition, DropZone, ExampleDataset, ExampleIcon};
 pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};

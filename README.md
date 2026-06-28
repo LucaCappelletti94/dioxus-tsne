@@ -1,33 +1,9 @@
-# dioxus-decompositions
+# dioxus-tsne
 
-Reusable [Dioxus](https://dioxuslabs.com) components to run and visualize t-SNE, PCA and similar decompositions in a web worker. Drop a CSV, TSV or Parquet file and watch the embedding animate.
+Barnes-Hut t-SNE in the browser, in Rust + WebAssembly. Drop a CSV, TSV or Parquet file (or pick an example) and watch the embedding form. The fit runs off the main thread on a `SharedArrayBuffer` Rayon pool, with PCA initialization for stable global structure.
 
-## Usage
+## References
 
-`Decomposition` is a fluent builder over a single panel (plot, toolbar, drag and drop loader, color legend). Everything past the bare plot is opt in.
+t-SNE: [van der Maaten & Hinton 2008](https://www.jmlr.org/papers/v9/vandermaaten08a.html), [van der Maaten 2014](https://www.jmlr.org/papers/v15/vandermaaten14a.html). Reading the maps: [Wattenberg et al. 2016](https://distill.pub/2016/misread-tsne/). PCA init: [Kobak & Berens 2019](https://doi.org/10.1038/s41467-019-13056-x), [Kobak & Linderman 2021](https://doi.org/10.1038/s41587-020-00809-z). Implementation: [bhtsne](https://github.com/frjnn/bhtsne).
 
-```rust
-use dioxus_decompositions::{Decomposition, ExampleDataset};
-
-Decomposition::new()
-    .drop_zone()        // drop a file, or click to browse
-    .examples(vec![/* ExampleDataset { name, url } */])
-    .controls()         // method, Run/Continue, color by, settings, status
-    .draggable_points() // grab points to steer a run
-    .render()
-```
-
-Or start from an in-memory dataset instead of a file:
-
-```rust
-Decomposition::new()
-    .dataset(features, n_samples, n_features) // row major
-    .labels("cluster", labels)                // colored with a legend
-    .render()
-```
-
-## Worker
-
-The compute runs in a web worker, which browsers require to be a separate script. Your app builds a tiny binary that registers `DecompositionWorker` and serves it. `Decomposition` loads it from `DEFAULT_WORKER_URL` (`/dioxus-decompositions/loader.js`), overridable with `.worker_url(...)`. Copy `app/build.rs`, which automates the build.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) to run the reference app in `app/`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to build and run it locally.

@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use dioxus_decompositions::{DecompositionMethod, TsneParams, decompose};
+use dioxus_tsne::{DecompositionMethod, TsneParams, decompose};
 
 /// Two well separated gaussian-ish clusters via a deterministic LCG.
 fn clustered_data(n_per_cluster: usize, dim: usize) -> Vec<f32> {
@@ -80,7 +80,6 @@ fn tsne_reports_snapshots_and_separates_clusters() {
     .unwrap();
 
     assert_eq!(output.embedding.len(), N * 2);
-    assert!(output.explained_variance_ratio.is_none());
 
     let seen = snapshots.into_inner().unwrap();
     assert_eq!(seen, (0..300).step_by(10).collect::<Vec<_>>());
@@ -236,24 +235,6 @@ fn tsne_params_serde_round_trips_with_initial_embedding() {
 }
 
 #[test]
-fn pca_method_reports_explained_variance() {
-    const N: usize = 100;
-    const DIM: usize = 5;
-    let data = clustered_data(N / 2, DIM);
-
-    let output = decompose(&data, N, DIM, &DecompositionMethod::Pca, |_, _| {
-        panic!("PCA must not produce snapshots");
-    })
-    .unwrap();
-
-    assert_eq!(output.embedding.len(), N * 2);
-    let ratios = output.explained_variance_ratio.unwrap();
-    assert_eq!(ratios.len(), 2);
-    // The cluster separation axis dominates the variance.
-    assert!(ratios[0] > 0.9, "{ratios:?}");
-}
-
-#[test]
 fn excessive_perplexity_is_rejected() {
     let data = clustered_data(10, 4);
     let result = decompose(
@@ -280,18 +261,24 @@ fn non_positive_theta_is_rejected() {
 
 #[test]
 fn inconsistent_shape_is_rejected() {
-    let result = decompose(&[1.0, 2.0, 3.0], 2, 2, &DecompositionMethod::Pca, |_, _| {});
+    let result = decompose(
+        &[1.0, 2.0, 3.0],
+        2,
+        2,
+        &DecompositionMethod::Tsne(TsneParams::default()),
+        |_, _| {},
+    );
     assert!(result.unwrap_err().contains("inconsistent"));
 }
 
 #[test]
 fn empty_input_is_rejected() {
-    let result = decompose(&[], 0, 0, &DecompositionMethod::Pca, |_, _| {});
+    let result = decompose(
+        &[],
+        0,
+        0,
+        &DecompositionMethod::Tsne(TsneParams::default()),
+        |_, _| {},
+    );
     assert!(result.unwrap_err().contains("empty"));
-}
-
-#[test]
-fn pca_with_single_feature_is_rejected() {
-    let result = decompose(&[1.0, 2.0, 3.0], 3, 1, &DecompositionMethod::Pca, |_, _| {});
-    assert!(result.unwrap_err().contains("two features"));
 }
