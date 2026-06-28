@@ -61,6 +61,11 @@ jobs:
           wranglerVersion: "4"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch=main: a tag build checks out a detached HEAD, so without
+          # this Wrangler tags the deployment with branch "HEAD" and files it as
+          # a Preview. Pinning it to the project's production branch makes it the
+          # Production deployment that dioxus-tsne.pages.dev (and the custom
+          # domain) actually serve.
           # --commit-dirty: the bundle emits the gitignored worker files, so the
           # tree is dirty at deploy time; that is expected, not a reason to warn.
-          command: pages deploy target/dx/decompositions-app/release/web/public --project-name=dioxus-tsne --commit-dirty=true
+          command: pages deploy target/dx/decompositions-app/release/web/public --project-name=dioxus-tsne --branch=main --commit-dirty=true
