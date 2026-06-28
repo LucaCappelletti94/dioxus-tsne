@@ -46,10 +46,21 @@ jobs:
       - name: Bundle
         run: dx bundle -p decompositions-app --release --debug-symbols false
 
+      # `pages deploy` does not create the project, it errors with "Project not
+      # found" if it is missing. Create it up front, idempotently: the create
+      # call is a no-op (non-zero, swallowed) once the project exists.
+      - name: Ensure Pages project exists
+        run: npx --yes wrangler@4 pages project create dioxus-tsne --production-branch=main || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           wranglerVersion: "4"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy target/dx/decompositions-app/release/web/public --project-name=dioxus-tsne
+          # --commit-dirty: the bundle emits the gitignored worker files, so the
+          # tree is dirty at deploy time; that is expected, not a reason to warn.
+          command: pages deploy target/dx/decompositions-app/release/web/public --project-name=dioxus-tsne --commit-dirty=true
