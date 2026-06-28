@@ -78,6 +78,7 @@ fn App() -> Element {
             Decomposition::new()
                 .logo(LOGO.to_string())
                 .repository("https://github.com/LucaCappelletti94/dioxus-decompositions")
+                .support("https://github.com/sponsors/LucaCappelletti94")
                 .drop_zone()
                 .examples(vec![
                     ExampleDataset {

@@ -20,8 +20,9 @@ use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
     FaBullseye, FaCalculator, FaCircleDot, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload,
-    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaInfinity, FaPalette, FaPause, FaPlay, FaRepeat,
-    FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTriangleExclamation, FaXmark,
+    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaHeart, FaInfinity, FaPalette, FaPause, FaPlay,
+    FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTriangleExclamation,
+    FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -183,7 +184,7 @@ const HELP_THETA: &str = "Trades t-SNE speed against accuracy. Lower is more acc
 const HELP_EPOCHS: &str = "How many refinement steps to run. More steps polish the layout further but take longer. 1000 is a good default, a few hundred is often enough.";
 const HELP_INFINITE: &str = "Keep iterating with no fixed limit until you press pause, so you can watch the layout evolve indefinitely. The epoch count above is ignored.";
 const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
-const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 50 is the standard choice, 2 or more.";
+const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 30 by default, a typical range is 30 to 50, 2 or more.";
 const HELP_COLUMNS: &str = "What each column does. Feature: fed into t-SNE. Label: kept out of t-SNE and offered as a color (numeric labels become a heatmap). Ignore: dropped entirely.";
 const HELP_EARLY_EXAGGERATION: &str = "How hard clusters are pushed apart early in the run, before the layout settles. 12 is the standard value, 1 turns it off. Ignored when continuing a run.";
 const HELP_EXAGGERATION_EPOCHS: &str = "How many epochs that early push lasts. 250 is typical. 0 turns early exaggeration off. Ignored when continuing a run.";
@@ -196,7 +197,7 @@ const HELP_RECORD: &str = "Record the scatter plot animation as a WebM video. To
 const HELP_CLEAR: &str = "Clear the dataset and result, returning to the start.";
 
 /// File input `accept` attribute.
-const DATA_ACCEPT: &str = ".csv,.tsv,.parquet";
+const DATA_ACCEPT: &str = ".csv,.tsv,.parquet,.arrow,.feather,.npy";
 
 /// Default URL the worker loader module is served from, the path the reference
 /// `build.rs` writes it to (`public/dioxus-decompositions/loader.js`, served at
@@ -341,11 +342,13 @@ pub struct DropZone {
 impl Default for DropZone {
     fn default() -> Self {
         Self {
-            accept: ["csv", "tsv", "parquet"]
+            accept: ["csv", "tsv", "parquet", "arrow", "feather", "npy"]
                 .into_iter()
                 .map(String::from)
                 .collect(),
-            prompt: String::from("Drop a CSV, TSV or Parquet file here, or click to browse"),
+            prompt: String::from(
+                "Drop a CSV, TSV, Parquet, Arrow or NumPy (.npy) file here, or click to browse",
+            ),
         }
     }
 }
@@ -418,6 +421,7 @@ pub struct Decomposition {
     pixel_ratio: Option<f64>,
     logo: Option<String>,
     repo_url: Option<String>,
+    support_url: Option<String>,
 }
 
 impl Default for Decomposition {
@@ -441,6 +445,7 @@ impl Decomposition {
             pixel_ratio: None,
             logo: None,
             repo_url: None,
+            support_url: None,
         }
     }
 
@@ -455,6 +460,13 @@ impl Decomposition {
     /// in a new tab). Omitted when unset.
     pub fn repository(mut self, url: impl Into<String>) -> Self {
         self.repo_url = Some(url.into());
+        self
+    }
+
+    /// Adds a heart button to the top bar linking to a support or sponsor page
+    /// at `url` (opened in a new tab). Omitted when unset.
+    pub fn support(mut self, url: impl Into<String>) -> Self {
+        self.support_url = Some(url.into());
         self
     }
 
@@ -576,6 +588,7 @@ fn DecompositionView(config: Decomposition) -> Element {
         pixel_ratio,
         logo,
         repo_url,
+        support_url,
     } = config;
 
     // A preloaded dataset starts colored by its first label column.
@@ -1408,6 +1421,18 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 Icon { icon: FaGithub, width: 17, height: 17, class: "decompositions-icon" }
                             }
                         }
+                        if let Some(support_url) = support_url.as_ref() {
+                            a {
+                                id: "support",
+                                class: "decompositions-iconbtn decompositions-heartbtn",
+                                href: "{support_url}",
+                                target: "_blank",
+                                rel: "noopener",
+                                title: "Support this project",
+                                "aria-label": "Support this project. Opens in a new tab.",
+                                Icon { icon: FaHeart, width: 16, height: 16, class: "decompositions-icon" }
+                            }
+                        }
                         button {
                             id: "settings",
                             class: "decompositions-iconbtn",
@@ -1424,7 +1449,12 @@ fn DecompositionView(config: Decomposition) -> Element {
             }
 
             // Empty state covering the page: example buttons and the drop hint.
-            if (drop_enabled || has_examples) && embedding.read().is_none() {
+            // Gone once a dataset is loaded (so dropping a file clears it), but
+            // the loading spinner still shows while a load or run is in flight.
+            if (drop_enabled || has_examples)
+                && embedding.read().is_none()
+                && (dataset.read().is_none() || busy())
+            {
                 div {
                     id: "dropzone",
                     class: if dragging_over() { "decompositions-empty decompositions-empty--over" } else { "decompositions-empty" },
@@ -1870,7 +1900,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                             }
                             ", an approximation that scales to tens of thousands of points, "
                             "entirely in your browser on a background worker. The input is first "
-                            "reduced with PCA (50 dimensions by default) to speed up the neighbor "
+                            "reduced with PCA (30 dimensions by default) to speed up the neighbor "
                             "search and cut noise, then t-SNE produces the layout you watch evolve. "
                             "The embedding is initialized from the top principal components rather "
                             "than from random noise, which preserves the global layout of the data "

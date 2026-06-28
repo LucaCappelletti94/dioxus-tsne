@@ -85,7 +85,7 @@ impl Default for TsneParams {
             theta: 0.5,
             epochs: 1000,
             learning_rate: None,
-            pca_dims: 50,
+            pca_dims: 30,
             early_exaggeration: default_early_exaggeration(),
             early_exaggeration_epochs: default_early_exaggeration_epochs(),
             snapshot_every: 5,

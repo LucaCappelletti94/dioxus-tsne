@@ -152,6 +152,12 @@ a.decompositions-iconbtn {
     opacity: 0.6;
 }
 
+/* Sponsor heart: turns red on hover instead of the usual dim. */
+.decompositions-topbar .decompositions-heartbtn:hover:not(:disabled) {
+    color: #e2264d;
+    opacity: 1;
+}
+
 /* Thin progress bar pinned to the very top edge of the viewport. */
 .decompositions-progress {
     position: absolute;
