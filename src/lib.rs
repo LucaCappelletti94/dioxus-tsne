@@ -28,13 +28,29 @@
 //!    and serves the output next to a two line loader module that initializes
 //!    it with an explicit wasm URL. The `app` crate of this repository
 //!    automates all of this with a `build.rs` using the
-//!    `wasm-bindgen-cli-support` library, writing into the `public/`
-//!    directory that dx serves at the site root. Copy it. The explicit wasm
-//!    URL in the loader matters: dx minifies served JS and strips the
-//!    `import.meta.url` based default path inside the wasm-bindgen glue.
+//!    `wasm-bindgen-cli-support` library, writing into
+//!    `public/dioxus-decompositions/` (served at the site root as
+//!    [`DEFAULT_WORKER_URL`]). Copy it. The explicit wasm URL in the loader
+//!    matters: dx minifies served JS and strips the `import.meta.url` based
+//!    default path inside the wasm-bindgen glue.
 //!
-//! 3. Passes the URL of the loader module to the components via the
-//!    `worker_url` prop.
+//! 3. Builds the UI with the [`Decomposition`] fluent builder, opting into the
+//!    features it wants:
+//!
+//! ```ignore
+//! use dioxus_decompositions::Decomposition;
+//!
+//! Decomposition::new()
+//!     .drop_zone()
+//!     .controls()
+//!     .draggable_points()
+//!     .render()
+//! # ;
+//! ```
+//!
+//! The worker is loaded from [`DEFAULT_WORKER_URL`] unless overridden with
+//! [`Decomposition::worker_url`] (for a custom `build.rs` output path or a site
+//! served under a subpath).
 
 mod color;
 mod components;
@@ -45,14 +61,13 @@ mod pca;
 mod plot;
 mod worker;
 
-/// The default stylesheet of the components, injected by
-/// [`DecompositionExplorer`] unless its `styled` prop is false. Consumers
-/// styling the `decompositions-*` class names themselves can serve their own
-/// rules instead.
+/// The default stylesheet of the components, injected by [`Decomposition`]
+/// unless [`Decomposition::styled`] is set to false. Consumers styling the
+/// `decompositions-*` class names themselves can serve their own rules instead.
 pub const DEFAULT_STYLE: &str = include_str!("style.css");
 
 pub use color::{ColorScale, Coloring, LegendEntry, Marker, colorize};
-pub use components::{DecompositionExplorer, ExampleDataset};
+pub use components::{DEFAULT_WORKER_URL, Decomposition, DropZone, ExampleDataset};
 pub use compute::{DecomposeOutput, decompose};
 pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};

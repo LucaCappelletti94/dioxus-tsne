@@ -43,12 +43,17 @@ parquet = [
 arrow-array = { version = "58", optional = true }
 arrow-cast = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
-bhtsne = { git = "https://github.com/LucaCappelletti94/bhtsne", branch = "epoch-callback", version = "0.5.5", default-features = false, features = ["wasm_js"] }
+bhtsne = { git = "https://github.com/frjnn/bhtsne", default-features = false, features = ["wasm_js"] }
 bytes = { version = "1", optional = true }
 csv = "1"
 dioxus.workspace = true
+dioxus-free-icons = { version = "0.10.0", default-features = false, features = ["font-awesome-solid"] }
 gloo-net = { version = "0.7.0", default-features = false, features = ["http"] }
 gloo-worker.workspace = true
+js-sys = "0.3"
+# Already pulled in transitively by bhtsne, declared directly so the worker can
+# report rayon's global pool size (the active thread count) back to the UI.
+rayon = "1"
 nalgebra = "0.35.0"
 parquet = { version = "58", default-features = false, features = [
     "arrow",
@@ -58,10 +63,21 @@ send_wrapper = "0.6.0"
 serde.workspace = true
 wasm-bindgen.workspace = true
 web-sys = { version = "0.3", features = [
+    "Blob",
+    "BlobEvent",
+    "BlobPropertyBag",
     "CanvasRenderingContext2d",
+    "Document",
+    "DomRect",
     "Element",
+    "HtmlAnchorElement",
     "HtmlCanvasElement",
     "HtmlSelectElement",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "MediaStream",
+    "Url",
+    "Window",
 ] }
 
 [dev-dependencies]
