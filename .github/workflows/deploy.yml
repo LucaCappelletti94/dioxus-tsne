@@ -23,7 +23,7 @@ jobs:
     # ~15-20 min cold (build-std + wasm-opt over the worker), well under this.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
 
       # nightly first, then stable, so stable stays the default toolchain (dx
       # builds the app on it) while nightly remains reachable as `rustup run
@@ -37,7 +37,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
 
       - uses: cargo-bins/cargo-binstall@main
       - run: cargo binstall -y dioxus-cli@0.7.9
@@ -56,7 +56,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
+        uses: cloudflare/wrangler-action@v4.0.0
         with:
           wranglerVersion: "4"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
