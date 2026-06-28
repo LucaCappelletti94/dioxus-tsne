@@ -5,7 +5,7 @@ use send_wrapper::SendWrapper;
 
 use crate::compute::{TsneCache, decompose_cached};
 use crate::ingest::parse_dataset;
-use crate::messages::{DecompositionMethod, WorkerRequest, WorkerResponse};
+use crate::messages::{DecompositionMethod, TsnePhase, WorkerRequest, WorkerResponse};
 
 /// Worker running the decompositions off the main thread.
 ///
@@ -93,14 +93,36 @@ fn run_decomposition(
     // long the run has taken. `Date::now` reads the JS clock available in the
     // worker. The `f64` is Copy, so the move closure keeps `start` usable after.
     let start = js_sys::Date::now();
-    // Size of rayon's global pool. In the threaded worker build this is the
-    // wasm-bindgen-rayon pool size (the core count), otherwise 1. Reported back
-    // so the UI can show whether the parallel path is actually active.
+    // Size of rayon's global pool: the wasm-bindgen-rayon pool size (the capped
+    // core count). Reported back so the UI can show the live pool size. A page
+    // that is not cross-origin isolated leaves this at 1, surfacing a broken
+    // serve setup.
     let threads = rayon::current_num_threads();
 
-    // The epoch callback requires Send + Sync captures, while the scope holds
-    // JS values. The worker is single threaded, so the wrapper is sound: the
-    // callback runs on this very thread.
+    // A fresh t-SNE run (no warm-start seed) rebuilds the affinity graph, so the
+    // first thing it does is the neighbor search. Name that phase up front, the
+    // worker then blocks in it until the first epoch streams back. A warm-start
+    // continuation reuses the cached graph and skips straight to optimizing.
+    // The early-exaggeration boundary is `0` for a warm start (exaggeration is
+    // disabled) and the configured duration otherwise.
+    let stop_lying = match method {
+        DecompositionMethod::Tsne(params) if params.initial_embedding.is_none() => {
+            scope.respond(
+                id,
+                WorkerResponse::Phase {
+                    phase: TsnePhase::FindingNeighbors,
+                },
+            );
+            params.early_exaggeration_epochs
+        }
+        _ => 0,
+    };
+
+    // The epoch callback requires Send + Sync captures, while the scope holds JS
+    // values. rayon parallelizes the gradient within each epoch, but bhtsne
+    // invokes the epoch callback from the thread driving the fit (this one, the
+    // worker's message handler), so the wrapper is only ever dereferenced on the
+    // thread that created it.
     let snapshot_scope = SendWrapper::new(scope.clone());
     let outcome = decompose_cached(
         data,
@@ -109,11 +131,17 @@ fn run_decomposition(
         method,
         cache,
         move |epoch, embedding| {
+            let phase = if epoch < stop_lying {
+                TsnePhase::EarlyExaggeration
+            } else {
+                TsnePhase::Optimizing
+            };
             snapshot_scope.respond(
                 id,
                 WorkerResponse::Snapshot {
                     epoch,
                     embedding: embedding.to_vec(),
+                    phase,
                     elapsed_ms: js_sys::Date::now() - start,
                     threads,
                 },
@@ -125,7 +153,7 @@ fn run_decomposition(
     let response = match outcome {
         Ok(output) => WorkerResponse::Done {
             embedding: output.embedding,
-            explained_variance_ratio: output.explained_variance_ratio,
+            kl_divergence: output.kl_divergence,
             elapsed_ms,
             threads,
         },

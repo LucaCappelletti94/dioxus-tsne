@@ -293,7 +293,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "bhtsne"
 version = "0.7.3"
-source = "git+https://github.com/frjnn/bhtsne#065013eb52c986887b83599a9e38a8497b601a5e"
+source = "git+https://github.com/frjnn/bhtsne#d18609ee8a588a73d8b510f2bb6e4c42e6f3408f"
 dependencies = [
  "getrandom 0.3.4",
  "num-traits",
@@ -838,7 +838,7 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "dioxus",
- "dioxus-decompositions",
+ "dioxus-tsne",
  "wasm-bindgen-cli-support",
  "wasm-opt",
 ]
@@ -848,7 +848,7 @@ name = "decompositions-worker"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
- "dioxus-decompositions",
+ "dioxus-tsne",
  "gloo-worker",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
@@ -1009,31 +1009,6 @@ name = "dioxus-core-types"
 version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36963eab106b169737762f9cd5ee5fd97f585989dcb2d8e30a596e97a6999009"
-
-[[package]]
-name = "dioxus-decompositions"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-cast",
- "arrow-schema",
- "bhtsne",
- "bytes",
- "csv",
- "dioxus",
- "dioxus-free-icons",
- "gloo-net 0.7.0",
- "gloo-worker",
- "js-sys",
- "nalgebra",
- "parquet",
- "rayon",
- "send_wrapper",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "web-sys",
-]
 
 [[package]]
 name = "dioxus-devtools"
@@ -1332,6 +1307,31 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "dioxus-tsne"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-schema",
+ "bhtsne",
+ "bytes",
+ "csv",
+ "dioxus",
+ "dioxus-free-icons",
+ "gloo-net 0.7.0",
+ "gloo-worker",
+ "js-sys",
+ "nalgebra",
+ "parquet",
+ "rayon",
+ "send_wrapper",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

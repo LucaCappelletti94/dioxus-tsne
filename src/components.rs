@@ -11,16 +11,17 @@ use std::rc::Rc;
 
 use crate::color::{Coloring, colorize};
 use crate::ingest::{Dataset, LabelColumn};
-use crate::messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
+use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest, WorkerResponse};
 use crate::plot::ScatterPlot;
 use crate::worker::DecompositionWorker;
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
+use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBullseye, FaCircleInfo, FaCircleNodes, FaCircleStop, FaCompress, FaDownload, FaFileArrowUp,
-    FaForwardStep, FaGaugeHigh, FaPlay, FaRepeat, FaSliders, FaSpinner, FaTriangleExclamation,
-    FaVideo, FaXmark,
+    FaBullseye, FaCalculator, FaCircleDot, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload,
+    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaInfinity, FaPalette, FaPause, FaPlay, FaRepeat,
+    FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTriangleExclamation, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -29,9 +30,141 @@ use wasm_bindgen::closure::Closure;
 /// Longest legend rendered before truncation.
 const MAX_LEGEND_ENTRIES: usize = 20;
 
+/// Epoch budget for an "infinite" run: large enough to feel endless, but still
+/// finite (a fit cannot be interrupted mid-run, so a truly unbounded value could
+/// never stop).
+const INFINITE_EPOCHS: usize = 500_000;
+
 /// "thread" or "threads", to read naturally next to a pool size in the status.
 fn thread_word(threads: usize) -> &'static str {
     if threads == 1 { "thread" } else { "threads" }
+}
+
+/// Current viewport size in CSS pixels, the logical canvas size for the
+/// full-bleed plot. Falls back to a sensible default when the window is
+/// unavailable.
+fn window_size() -> (u32, u32) {
+    web_sys::window()
+        .map(|window| {
+            let width = window
+                .inner_width()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1024.0);
+            let height = window
+                .inner_height()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(768.0);
+            (width.max(1.0) as u32, height.max(1.0) as u32)
+        })
+        .unwrap_or((1024, 768))
+}
+
+/// The role a parsed column plays once the user has assigned it: a t-SNE input
+/// feature, a label only used to color points, or dropped entirely.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnRole {
+    Feature,
+    Label,
+    Ignore,
+}
+
+/// Where a column's values live in the parsed [`Dataset`]: either a column of
+/// the numeric feature matrix, or one of the text label columns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnSource {
+    /// Index into the row-major feature matrix (`feature_names[i]`).
+    Feature(usize),
+    /// Index into `label_columns`.
+    Label(usize),
+}
+
+/// A parsed column together with the role the user has assigned it. Numeric
+/// columns default to `Feature`, text columns to `Label`.
+#[derive(Clone, PartialEq)]
+struct ColumnEntry {
+    name: String,
+    source: ColumnSource,
+    role: ColumnRole,
+    /// Numeric columns can be features; text columns can only label or be
+    /// ignored.
+    numeric: bool,
+}
+
+/// Builds the default column roles for a freshly parsed dataset: every numeric
+/// column a feature, every text column a label, in matrix-then-label order.
+fn default_columns(dataset: &Dataset) -> Vec<ColumnEntry> {
+    let mut entries = Vec::with_capacity(dataset.feature_names.len() + dataset.label_columns.len());
+    for (index, name) in dataset.feature_names.iter().enumerate() {
+        entries.push(ColumnEntry {
+            name: name.clone(),
+            source: ColumnSource::Feature(index),
+            role: ColumnRole::Feature,
+            numeric: true,
+        });
+    }
+    for (index, column) in dataset.label_columns.iter().enumerate() {
+        entries.push(ColumnEntry {
+            name: column.name.clone(),
+            source: ColumnSource::Label(index),
+            role: ColumnRole::Label,
+            numeric: false,
+        });
+    }
+    entries
+}
+
+/// Assembles the t-SNE input matrix from the columns the user marked as
+/// features. Returns `None` when no feature column is selected.
+fn build_feature_matrix(dataset: &Dataset, columns: &[ColumnEntry]) -> Option<(Vec<f32>, usize)> {
+    let feature_indices: Vec<usize> = columns
+        .iter()
+        .filter_map(|entry| match (entry.role, entry.source) {
+            (ColumnRole::Feature, ColumnSource::Feature(index)) => Some(index),
+            _ => None,
+        })
+        .collect();
+    if feature_indices.is_empty() {
+        return None;
+    }
+    let n_features = feature_indices.len();
+    let mut data = Vec::with_capacity(dataset.n_samples * n_features);
+    for row in 0..dataset.n_samples {
+        for &index in &feature_indices {
+            data.push(dataset.data[row * dataset.n_features + index]);
+        }
+    }
+    Some((data, n_features))
+}
+
+/// The label columns to color by given the current roles: text columns kept as
+/// labels, plus any numeric column the user reassigned to a label (its values
+/// stringified so the continuous color scale can parse them into a heatmap).
+fn effective_label_columns(dataset: &Dataset, columns: &[ColumnEntry]) -> Vec<LabelColumn> {
+    let mut labels = Vec::new();
+    for entry in columns {
+        if entry.role != ColumnRole::Label {
+            continue;
+        }
+        match entry.source {
+            ColumnSource::Label(index) => {
+                if let Some(column) = dataset.label_columns.get(index) {
+                    labels.push(column.clone());
+                }
+            }
+            ColumnSource::Feature(index) => {
+                let values = (0..dataset.n_samples)
+                    .map(|row| dataset.data[row * dataset.n_features + index].to_string())
+                    .collect();
+                labels.push(LabelColumn {
+                    name: entry.name.clone(),
+                    values,
+                });
+            }
+        }
+    }
+    labels
 }
 
 /// The size-scaled learning rate bhtsne resolves when none is set,
@@ -45,17 +178,17 @@ fn auto_learning_rate(n_samples: usize) -> f32 {
 // Plain language explanations shown as hover tooltips (`title`) and to screen
 // readers (`aria-label`), so a newcomer can learn what each control does just by
 // hovering it.
-const HELP_METHOD: &str = "How to flatten the data to two dimensions: t-SNE groups similar points into clusters, PCA is a faster straight line projection.";
 const HELP_PERPLEXITY: &str = "Roughly how many close neighbors each point pays attention to. Smaller makes tight local clumps, larger spreads things out. 5 to 50 is typical.";
 const HELP_THETA: &str = "Trades t-SNE speed against accuracy. Lower is more accurate but slower, higher is faster but rougher. 0.5 is a sensible default.";
-const HELP_EPOCHS: &str =
-    "How many refinement steps to run. More steps polish the layout further but take longer.";
-const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. 200 is a common value.";
-const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions to speed things up. 50 is the standard choice.";
+const HELP_EPOCHS: &str = "How many refinement steps to run. More steps polish the layout further but take longer. 1000 is a good default, a few hundred is often enough.";
+const HELP_INFINITE: &str = "Keep iterating with no fixed limit until you press pause, so you can watch the layout evolve indefinitely. The epoch count above is ignored.";
+const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
+const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 50 is the standard choice, 2 or more.";
+const HELP_COLUMNS: &str = "What each column does. Feature: fed into t-SNE. Label: kept out of t-SNE and offered as a color (numeric labels become a heatmap). Ignore: dropped entirely.";
+const HELP_EARLY_EXAGGERATION: &str = "How hard clusters are pushed apart early in the run, before the layout settles. 12 is the standard value, 1 turns it off. Ignored when continuing a run.";
+const HELP_EXAGGERATION_EPOCHS: &str = "How many epochs that early push lasts. 250 is typical. 0 turns early exaggeration off. Ignored when continuing a run.";
 const HELP_RUN: &str =
     "Start the layout from scratch and watch the scatter plot animate as it improves.";
-const HELP_CONTINUE: &str =
-    "Run more steps starting from the current layout, keeping any points you have dragged.";
 const HELP_COLOR_BY: &str =
     "Color the points by one of the dataset's label columns to see where each group lands.";
 const HELP_SETTINGS: &str = "Advanced t-SNE settings.";
@@ -79,6 +212,7 @@ pub const DEFAULT_WORKER_URL: &str = "/dioxus-decompositions/loader.js";
 fn spawn_bridge(
     worker_url: &str,
     status: Signal<String>,
+    phase: Signal<Option<TsnePhase>>,
     embedding: Signal<Option<Vec<f32>>>,
     dataset: Signal<Option<Dataset>>,
     ingest_error: Signal<Option<String>>,
@@ -91,6 +225,7 @@ fn spawn_bridge(
         .callback(move |response| {
             // Signals are Copy, the rebindings make the closure a plain Fn.
             let mut status = status;
+            let mut phase = phase;
             let mut embedding = embedding;
             let mut dataset = dataset;
             let mut ingest_error = ingest_error;
@@ -117,12 +252,17 @@ fn spawn_bridge(
                     status.set(String::from("idle"));
                     ingest_error.set(Some(message));
                 }
+                WorkerResponse::Phase { phase: current } => {
+                    phase.set(Some(current));
+                }
                 WorkerResponse::Snapshot {
                     epoch,
                     embedding: snapshot,
+                    phase: current,
                     elapsed_ms,
                     threads,
                 } => {
+                    phase.set(Some(current));
                     status.set(format!(
                         "epoch {epoch} ({:.1}s, {threads} {})",
                         elapsed_ms / 1000.0,
@@ -132,21 +272,14 @@ fn spawn_bridge(
                 }
                 WorkerResponse::Done {
                     embedding: done,
-                    explained_variance_ratio,
+                    kl_divergence,
                     elapsed_ms,
                     threads,
                 } => {
                     let seconds = elapsed_ms / 1000.0;
                     let pool = format!("{threads} {}", thread_word(threads));
-                    status.set(match explained_variance_ratio {
-                        Some(ratios) => format!(
-                            "done in {seconds:.1}s ({pool}), explained variance: {}",
-                            ratios
-                                .iter()
-                                .map(|r| format!("{:.1}%", r * 100.0))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
+                    status.set(match kl_divergence {
+                        Some(kl) => format!("done in {seconds:.1}s ({pool}), KL {kl:.4}"),
                         None => format!("done in {seconds:.1}s ({pool})"),
                     });
                     embedding.set(Some(done));
@@ -159,6 +292,19 @@ fn spawn_bridge(
         .spawn(worker_url)
 }
 
+/// An optional glyph shown on an example button, hinting at the dataset's
+/// domain. Kept as a small enum (rather than a concrete icon type) so
+/// [`ExampleDataset`] stays `Clone`/`PartialEq` for the props system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExampleIcon {
+    /// Numbers / digits (e.g. MNIST).
+    Numbers,
+    /// Apparel / clothing (e.g. Fashion-MNIST).
+    Apparel,
+    /// A graph or citation network (e.g. Cora).
+    Network,
+}
+
 /// A bundled example dataset offered through a one click load button.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExampleDataset {
@@ -166,13 +312,18 @@ pub struct ExampleDataset {
     pub name: String,
     /// URL the file is served from, any supported format.
     pub url: String,
+    /// Optional glyph shown before the name.
+    pub icon: Option<ExampleIcon>,
+    /// Optional plain-language description shown on hover (tooltip and aria
+    /// label). Falls back to a generic "load" message when absent.
+    pub description: Option<String>,
 }
 
 /// Configuration of the drag and drop loader shown over the empty plot, built
 /// fluently.
 ///
 /// ```
-/// use dioxus_decompositions::DropZone;
+/// use dioxus_tsne::DropZone;
 ///
 /// let zone = DropZone::new()
 ///     .accept(["csv", "parquet"])
@@ -240,11 +391,11 @@ impl DropZone {
 /// with a legend over the plot.
 ///
 /// ```ignore
-/// use dioxus_decompositions::{Decomposition, ExampleDataset};
+/// use dioxus_tsne::{Decomposition, ExampleDataset};
 ///
 /// Decomposition::new()
 ///     .drop_zone()
-///     .examples(vec![ExampleDataset { name: "MNIST".into(), url: "/mnist.parquet".into() }])
+///     .examples(vec![ExampleDataset { name: "MNIST".into(), url: "/mnist.parquet".into(), icon: None, description: None }])
 ///     .controls()
 ///     .draggable_points()
 ///     .render()
@@ -265,6 +416,8 @@ pub struct Decomposition {
     draggable: bool,
     styled: bool,
     pixel_ratio: Option<f64>,
+    logo: Option<String>,
+    repo_url: Option<String>,
 }
 
 impl Default for Decomposition {
@@ -286,7 +439,23 @@ impl Decomposition {
             draggable: false,
             styled: true,
             pixel_ratio: None,
+            logo: None,
+            repo_url: None,
         }
+    }
+
+    /// Sets the brand logo shown in the top-left corner (an image URL, e.g. a
+    /// bundled asset). Without it the top bar shows the plain title text.
+    pub fn logo(mut self, url: impl Into<String>) -> Self {
+        self.logo = Some(url.into());
+        self
+    }
+
+    /// Adds a GitHub button to the top bar linking to the project `url` (opened
+    /// in a new tab). Omitted when unset.
+    pub fn repository(mut self, url: impl Into<String>) -> Self {
+        self.repo_url = Some(url.into());
+        self
     }
 
     /// Overrides the plot's backing buffer resolution multiplier (over its
@@ -405,6 +574,8 @@ fn DecompositionView(config: Decomposition) -> Element {
         draggable,
         styled,
         pixel_ratio,
+        logo,
+        repo_url,
     } = config;
 
     // A preloaded dataset starts colored by its first label column.
@@ -417,33 +588,66 @@ fn DecompositionView(config: Decomposition) -> Element {
     let dataset = use_signal(move || preset_dataset);
     let ingest_error = use_signal(|| None::<String>);
     let status = use_signal(|| String::from("idle"));
+    let phase = use_signal(|| None::<TsnePhase>);
     let embedding = use_signal(|| None::<Vec<f32>>);
-    let mut method = use_signal(|| String::from("tsne"));
+    // Canvas size, tracking the viewport so the plot fills the page and refits
+    // on resize (a window resize listener is installed below).
+    let viewport = use_signal(window_size);
     let defaults = TsneParams::default();
     let mut pca_dims = use_signal(|| defaults.pca_dims);
     let mut perplexity = use_signal(|| defaults.perplexity);
     let mut theta = use_signal(|| defaults.theta);
     let mut epochs = use_signal(|| defaults.epochs);
+    // Run without a fixed epoch budget: the fit keeps iterating until the user
+    // pauses it. Implemented as a huge epoch count the run never reaches.
+    let mut infinite = use_signal(|| false);
     let mut learning_rate = use_signal(|| defaults.learning_rate);
+    let mut early_exaggeration = use_signal(|| defaults.early_exaggeration);
+    let mut exaggeration_epochs = use_signal(|| defaults.early_exaggeration_epochs);
     let mut color_source = use_signal(|| initial_color_source);
     let mut color_select = use_signal(|| None::<web_sys::HtmlSelectElement>);
     let mut dragging_over = use_signal(|| false);
+    // Per-column roles (feature / label / ignore), reset to type-based defaults
+    // whenever a new dataset is parsed (see the effect below).
+    let mut columns = use_signal(Vec::<ColumnEntry>::new);
+
+    // Reset the column roles to defaults each time the dataset changes.
+    use_effect(move || {
+        let defaults = dataset
+            .read()
+            .as_ref()
+            .map(default_columns)
+            .unwrap_or_default();
+        columns.set(defaults);
+    });
+
+    // The label columns to color by under the current roles (text labels plus
+    // any numeric column reassigned to a heatmap).
+    let effective_labels = use_memo(move || -> Vec<LabelColumn> {
+        dataset
+            .read()
+            .as_ref()
+            .map(|d| effective_label_columns(d, &columns.read()))
+            .unwrap_or_default()
+    });
 
     // Builds the decomposition method from the current controls, shared by the
     // Run button, the auto-run on loading a dataset, and Continue.
     let build_method = move || -> DecompositionMethod {
-        if method.read().as_str() == "pca" {
-            DecompositionMethod::Pca
-        } else {
-            DecompositionMethod::Tsne(TsneParams {
-                perplexity: perplexity(),
-                theta: theta(),
-                epochs: epochs(),
-                learning_rate: learning_rate(),
-                pca_dims: pca_dims(),
-                ..TsneParams::default()
-            })
-        }
+        DecompositionMethod::Tsne(TsneParams {
+            perplexity: perplexity(),
+            theta: theta(),
+            epochs: if infinite() {
+                INFINITE_EPOCHS
+            } else {
+                epochs()
+            },
+            learning_rate: learning_rate(),
+            pca_dims: pca_dims(),
+            early_exaggeration: early_exaggeration(),
+            early_exaggeration_epochs: exaggeration_epochs(),
+            ..TsneParams::default()
+        })
     };
 
     // The browser snaps a select back to its first option when the bound value
@@ -462,16 +666,15 @@ fn DecompositionView(config: Decomposition) -> Element {
     // is a pure redraw, the embedding is never recomputed.
     let coloring_result = use_memo(move || -> Option<Coloring> {
         let source = color_source.read().clone();
-        let guard = dataset.read();
-        let parsed = guard.as_ref()?;
-        let labels = parsed
-            .label_columns
+        let n_samples = dataset.read().as_ref()?.n_samples;
+        let labels = effective_labels.read();
+        let column = labels
             .iter()
             .find(|c| c.name == source.strip_prefix("column:").unwrap_or(&source))?;
-        if labels.values.len() != parsed.n_samples {
+        if column.values.len() != n_samples {
             return None;
         }
-        Some(colorize(&labels.values))
+        Some(colorize(&column.values))
     });
     let colors = use_memo(move || coloring_result.read().as_ref().map(|c| c.colors.clone()));
     let markers = use_memo(move || coloring_result.read().as_ref().map(|c| c.markers.clone()));
@@ -481,6 +684,35 @@ fn DecompositionView(config: Decomposition) -> Element {
         let status = status.read();
         matches!(status.as_str(), "running" | "loading") || status.starts_with("epoch ")
     });
+    // The status line with the current t-SNE phase folded in. The phase is only
+    // shown while it is meaningful: "Finding neighbors" during the pre-epoch
+    // affinity build (status is still "running"), and the epoch phase prefixed
+    // to the streaming epoch line. A stale phase from a previous run is ignored
+    // because it is gated on the live status, so idle/done/error show as is.
+    let status_display = use_memo(move || {
+        let status = status.read();
+        match *phase.read() {
+            Some(TsnePhase::FindingNeighbors) if status.as_str() == "running" => {
+                String::from(TsnePhase::FindingNeighbors.label())
+            }
+            Some(phase) if status.starts_with("epoch ") => {
+                format!("{} - {status}", phase.label())
+            }
+            _ => status.clone(),
+        }
+    });
+    // Text for the spinner shown over the empty plot before the first embedding
+    // streams back. It must track the phase too: a fresh run has no embedding
+    // through both parsing and the neighbor search, so a hardcoded "Loading the
+    // dataset" would mislabel the neighbor search.
+    let loading_label = use_memo(move || {
+        match (status.read().as_str(), *phase.read()) {
+            ("loading", _) => "Loading the dataset",
+            (_, Some(TsnePhase::FindingNeighbors)) => "Finding neighbors",
+            _ => "Working",
+        }
+        .to_string()
+    });
     // Compute progress for the loading bar: `(indeterminate, fraction)`, or
     // None when hidden. "loading" (parsing in the worker) and "running" (the
     // affinity setup) have no sub-progress (indeterminate); "epoch N" is
@@ -489,6 +721,9 @@ fn DecompositionView(config: Decomposition) -> Element {
     let progress = use_memo(move || -> Option<(bool, f32)> {
         let status = status.read();
         if matches!(status.as_str(), "running" | "loading") {
+            Some((true, 0.0))
+        } else if status.starts_with("epoch ") && infinite() {
+            // No fixed budget, so the bar stays indeterminate while it runs.
             Some((true, 0.0))
         } else if let Some(rest) = status.strip_prefix("epoch ") {
             let total = epochs().max(1) as f32;
@@ -516,6 +751,7 @@ fn DecompositionView(config: Decomposition) -> Element {
         Rc::new(RefCell::new(spawn_bridge(
             &worker_url,
             status,
+            phase,
             embedding,
             dataset,
             ingest_error,
@@ -541,11 +777,13 @@ fn DecompositionView(config: Decomposition) -> Element {
             || web_sys::MediaRecorder::is_type_supported("video/webm")
     });
 
-    // Settings popover open state. A native <details> stays open until its own
-    // summary is clicked again, so the open state is driven from a signal and a
-    // document level pointerdown listener closes it on any press outside the
-    // popover (the summary's onclick toggles it, see the markup below).
+    // Settings sidebar open state, toggled by the gear button. A document level
+    // pointerdown listener closes it on any press outside both the sidebar and
+    // the gear (the gear is excluded so its own toggle is not immediately
+    // undone by this listener firing on the same press).
     let settings_open = use_signal(|| false);
+    // In-app "About t-SNE" overlay, opened by the help button.
+    let about_open = use_signal(|| false);
     use_hook(move || {
         let Some(document) = web_sys::window().and_then(|window| window.document()) else {
             return;
@@ -554,15 +792,22 @@ fn DecompositionView(config: Decomposition) -> Element {
             if !settings_open() {
                 return;
             }
-            // Keep the popover open only when the press landed inside it.
             let inside = event
                 .target()
                 .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
-                .and_then(|node| {
+                .map(|node| {
                     web_sys::window()
                         .and_then(|window| window.document())
-                        .and_then(|document| document.get_element_by_id("settings-popover"))
-                        .map(|popover| popover.contains(Some(&node)))
+                        .map(|document| {
+                            let in_panel = document
+                                .get_element_by_id("decompositions-sidebar")
+                                .is_some_and(|el| el.contains(Some(&node)));
+                            let in_gear = document
+                                .get_element_by_id("settings")
+                                .is_some_and(|el| el.contains(Some(&node)));
+                            in_panel || in_gear
+                        })
+                        .unwrap_or(false)
                 })
                 .unwrap_or(false);
             if !inside {
@@ -572,6 +817,19 @@ fn DecompositionView(config: Decomposition) -> Element {
         }) as Box<dyn FnMut(web_sys::Event)>);
         let _ = document
             .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
+        closure.forget();
+    });
+
+    // Keep the canvas size in step with the viewport.
+    use_hook(move || {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            let mut viewport = viewport;
+            viewport.set(window_size());
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = window.add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
         closure.forget();
     });
 
@@ -586,6 +844,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                 *bridge.borrow_mut() = spawn_bridge(
                     &worker_url,
                     status,
+                    phase,
                     embedding,
                     dataset,
                     ingest_error,
@@ -617,32 +876,24 @@ fn DecompositionView(config: Decomposition) -> Element {
                 return;
             };
             let mut status = status;
+            let mut ingest_error = ingest_error;
+            let Some((data, n_features)) = build_feature_matrix(&parsed, &columns.read()) else {
+                ingest_error.set(Some(String::from(
+                    "select at least one feature column in settings",
+                )));
+                status.set(String::from("idle"));
+                return;
+            };
+            ingest_error.set(None);
             status.set(String::from("running"));
             bridge.borrow().send(WorkerRequest::Decompose {
-                data: parsed.data,
+                data,
                 n_samples: parsed.n_samples,
-                n_features: parsed.n_features,
+                n_features,
                 method: build_method(),
             });
         }
     };
-    let run = {
-        let start_run = start_run.clone();
-        move |_| start_run()
-    };
-
-    // Continuing needs an embedding that still matches the current dataset (the
-    // length check rejects a dataset swapped after the last run) and the t-SNE
-    // method, since the seed lives in t-SNE's two dimensional output.
-    let can_continue = use_memo(move || {
-        !busy()
-            && method.read().as_str() == "tsne"
-            && dataset
-                .read()
-                .as_ref()
-                .zip(embedding.read().as_ref())
-                .is_some_and(|(parsed, current)| current.len() == parsed.n_samples * 2)
-    });
 
     // Sends a warm-started t-SNE run seeded with the current embedding, the
     // shared body of Continue and of resuming after a pause.
@@ -658,30 +909,32 @@ fn DecompositionView(config: Decomposition) -> Element {
             if seed.len() != parsed.n_samples * 2 {
                 return;
             }
+            let Some((data, n_features)) = build_feature_matrix(&parsed, &columns.read()) else {
+                return;
+            };
             let selected = DecompositionMethod::Tsne(TsneParams {
                 perplexity: perplexity(),
                 theta: theta(),
-                epochs: epochs(),
+                epochs: if infinite() {
+                    INFINITE_EPOCHS
+                } else {
+                    epochs()
+                },
                 learning_rate: learning_rate(),
                 pca_dims: pca_dims(),
+                early_exaggeration: early_exaggeration(),
+                early_exaggeration_epochs: exaggeration_epochs(),
                 initial_embedding: Some(seed),
                 ..TsneParams::default()
             });
             let mut status = status;
             status.set(String::from("running"));
             bridge.borrow().send(WorkerRequest::Decompose {
-                data: parsed.data,
+                data,
                 n_samples: parsed.n_samples,
-                n_features: parsed.n_features,
+                n_features,
                 method: selected,
             });
-        }
-    };
-
-    let continue_run = {
-        let send_warm_start = send_warm_start.clone();
-        move |_| {
-            send_warm_start();
         }
     };
 
@@ -696,6 +949,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                 *bridge.borrow_mut() = spawn_bridge(
                     &worker_url,
                     status,
+                    phase,
                     embedding,
                     dataset,
                     ingest_error,
@@ -710,10 +964,13 @@ fn DecompositionView(config: Decomposition) -> Element {
 
     // Releasing a paused point resumes the fit, warm starting from the dragged
     // layout on the fresh worker installed when the grab paused it.
-    let on_drag_end = move |()| {
-        if resume_pending() {
-            resume_pending.set(false);
-            send_warm_start();
+    let on_drag_end = {
+        let send_warm_start = send_warm_start.clone();
+        move |()| {
+            if resume_pending() {
+                resume_pending.set(false);
+                send_warm_start();
+            }
         }
     };
 
@@ -730,6 +987,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                 *bridge.borrow_mut() = spawn_bridge(
                     &worker_url,
                     status,
+                    phase,
                     embedding,
                     dataset,
                     ingest_error,
@@ -914,6 +1172,85 @@ fn DecompositionView(config: Decomposition) -> Element {
         recorded_url.set(None);
     };
 
+    // Transport controls (media-player style). Pause freezes a running fit by
+    // orphaning its worker (it self-closes after its current run) and installing
+    // a fresh idle one, so Play can warm-start from the frozen layout.
+    let pause = {
+        let bridge = bridge.clone();
+        let worker_url = worker_url.clone();
+        move || {
+            if busy() {
+                *bridge.borrow_mut() = spawn_bridge(
+                    &worker_url,
+                    status,
+                    phase,
+                    embedding,
+                    dataset,
+                    ingest_error,
+                    color_source,
+                );
+                let mut status = status;
+                status.set(String::from("paused"));
+            }
+        }
+    };
+    // Play resumes from the current layout when there is one (a paused or
+    // finished run), otherwise it starts a fresh run.
+    let play = {
+        let start_run = start_run.clone();
+        let send_warm_start = send_warm_start.clone();
+        move || {
+            if dataset.read().is_none() {
+                return;
+            }
+            if embedding.read().is_some() {
+                send_warm_start();
+            } else {
+                start_run();
+            }
+        }
+    };
+    let toggle_play = {
+        let play = play.clone();
+        let pause = pause.clone();
+        move |_| {
+            if busy() {
+                pause();
+            } else {
+                play();
+            }
+        }
+    };
+    let restart = {
+        let start_run = start_run.clone();
+        move |_| start_run()
+    };
+    // Rec arms recording and acts like Play. Toggling it off while armed or
+    // recording stops the capture (which assembles the downloadable video).
+    let rec_toggle = {
+        let play = play.clone();
+        let stop_capture = stop_capture.clone();
+        let capturing = capturing.clone();
+        move |_| {
+            let mut recording_armed = recording_armed;
+            if recording_armed() || recording_active() {
+                recording_armed.set(false);
+                stop_capture();
+                *capturing.borrow_mut() = false;
+            } else {
+                let mut recorded_url = recorded_url;
+                if let Some(url) = recorded_url.read().clone() {
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+                recorded_url.set(None);
+                recording_armed.set(true);
+                if !busy() {
+                    play();
+                }
+            }
+        }
+    };
+
     let drop_enabled = drop_zone.is_some();
     let drop_prompt = drop_zone
         .as_ref()
@@ -921,13 +1258,8 @@ fn DecompositionView(config: Decomposition) -> Element {
         .unwrap_or_default();
     let drop_zone = drop_zone.clone();
     let has_examples = !examples.is_empty();
-    // Whether the loaded dataset offers label columns to color by.
-    let has_labels = use_memo(move || {
-        dataset
-            .read()
-            .as_ref()
-            .is_some_and(|d| !d.label_columns.is_empty())
-    });
+    // Whether there is any label column to color by under the current roles.
+    let has_labels = use_memo(move || !effective_labels.read().is_empty());
 
     // Plot props gated on the enabled features, hoisted out of the rsx so the
     // conditionals stay plain Rust (`.then`) rather than inline if/else.
@@ -949,448 +1281,704 @@ fn DecompositionView(config: Decomposition) -> Element {
     let on_drag_end = draggable.then(|| EventHandler::new(on_drag_end));
 
     rsx! {
-        div { class: "decompositions-explorer",
+        div {
+            class: "decompositions-explorer",
+            // The whole page is the drop target.
+            ondragover: move |evt| {
+                if drop_enabled {
+                    evt.prevent_default();
+                    dragging_over.set(true);
+                }
+            },
+            ondragleave: move |_| dragging_over.set(false),
+            ondrop: {
+                let load = load.clone();
+                move |evt: Event<DragData>| {
+                    let zone = drop_zone.clone();
+                    let load = load.clone();
+                    async move {
+                        let Some(zone) = zone else {
+                            return;
+                        };
+                        evt.prevent_default();
+                        dragging_over.set(false);
+                        let Some(file) = evt.files().into_iter().next() else {
+                            return;
+                        };
+                        let name = file.name();
+                        let extension = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+                        if !zone.allows(&extension) {
+                            let mut dataset = dataset;
+                            let mut ingest_error = ingest_error;
+                            dataset.set(None);
+                            ingest_error.set(Some(format!("unsupported file type .{extension}")));
+                            return;
+                        }
+                        match file.read_bytes().await {
+                            Ok(bytes) => load(name, bytes.to_vec(), None),
+                            Err(error) => {
+                                let mut ingest_error = ingest_error;
+                                ingest_error.set(Some(error.to_string()));
+                            }
+                        }
+                    }
+                }
+            },
+
             if styled {
                 style { {crate::DEFAULT_STYLE} }
             }
-            div { class: "decompositions-panel",
-                if controls {
-                    div { class: "decompositions-toolbar",
-                        select {
-                            id: "method",
-                            class: "decompositions-select",
-                            value: "{method}",
-                            title: HELP_METHOD,
-                            "aria-label": HELP_METHOD,
-                            onchange: move |evt| method.set(evt.value()),
-                            option { value: "tsne", "t-SNE" }
-                            option { value: "pca", "PCA" }
+
+            // Progress bar pinned to the very top edge of the viewport.
+            if let Some((indeterminate, fraction)) = progress() {
+                div { class: "decompositions-progress",
+                    div {
+                        class: if indeterminate { "decompositions-progress-fill decompositions-progress-fill--indeterminate" } else { "decompositions-progress-fill" },
+                        style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                    }
+                }
+            }
+
+            // Full-bleed plot.
+            div { class: "decompositions-plot-area",
+                ScatterPlot {
+                    embedding,
+                    colors: Some(colors.into()),
+                    markers: Some(markers.into()),
+                    draggable: plot_draggable,
+                    on_point_moved,
+                    on_drag_start,
+                    on_drag_end,
+                    width: viewport().0,
+                    height: viewport().1,
+                    pixel_ratio,
+                }
+            }
+
+            // Color legend overlay (keeps data colors).
+            if let Some(active) = coloring_result.read().as_ref() {
+                div { id: "legend", class: "decompositions-legend",
+                    for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
+                        span { class: "decompositions-legend-entry",
+                            span {
+                                class: "decompositions-legend-swatch",
+                                style: "color: {entry.color};",
+                                "{entry.marker.glyph()}"
+                            }
+                            "{entry.label}"
+                        }
+                    }
+                    if active.legend.len() > MAX_LEGEND_ENTRIES {
+                        span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
+                    }
+                }
+            }
+
+            // Top bar: brand/logo on the left, settings gear on the right.
+            if controls {
+                div { class: "decompositions-topbar",
+                    div { class: "decompositions-brand",
+                        if let Some(logo) = logo.as_ref() {
+                            img { class: "decompositions-logo", src: "{logo}", alt: "dioxus-decompositions" }
+                        } else {
+                            span { "dioxus-decompositions" }
+                        }
+                    }
+                    div { class: "decompositions-topbar-actions",
+                        button {
+                            id: "help",
+                            class: "decompositions-iconbtn",
+                            title: "What is t-SNE?",
+                            "aria-label": "What is t-SNE? Opens an explainer.",
+                            onclick: move |_| {
+                                let mut about_open = about_open;
+                                about_open.set(true);
+                            },
+                            Icon { icon: FaCircleQuestion, width: 17, height: 17, class: "decompositions-icon" }
+                        }
+                        if let Some(repo_url) = repo_url.as_ref() {
+                            a {
+                                id: "repo",
+                                class: "decompositions-iconbtn",
+                                href: "{repo_url}",
+                                target: "_blank",
+                                rel: "noopener",
+                                title: "Source code on GitHub",
+                                "aria-label": "Source code on GitHub. Opens in a new tab.",
+                                Icon { icon: FaGithub, width: 17, height: 17, class: "decompositions-icon" }
+                            }
                         }
                         button {
-                            id: "run",
+                            id: "settings",
+                            class: "decompositions-iconbtn",
+                            title: HELP_SETTINGS,
+                            "aria-label": HELP_SETTINGS,
+                            onclick: move |_| {
+                                let mut settings_open = settings_open;
+                                settings_open.set(!settings_open());
+                            },
+                            Icon { icon: FaSliders, width: 16, height: 16, class: "decompositions-icon" }
+                        }
+                    }
+                }
+            }
+
+            // Empty state covering the page: example buttons and the drop hint.
+            if (drop_enabled || has_examples) && embedding.read().is_none() {
+                div {
+                    id: "dropzone",
+                    class: if dragging_over() { "decompositions-empty decompositions-empty--over" } else { "decompositions-empty" },
+                    if busy() {
+                        div { id: "loading", class: "decompositions-loading",
+                            Icon { icon: FaSpinner, width: 32, height: 32, class: "decompositions-icon decompositions-spinner" }
+                            span { "{loading_label}" }
+                        }
+                    } else {
+                        if has_examples {
+                            div { class: "decompositions-examples",
+                                for (index, example) in examples.iter().enumerate() {
+                                    button {
+                                        id: "load-example-{index}",
+                                        class: "decompositions-example",
+                                        title: example.description.clone().unwrap_or_else(|| format!("Load the {} example dataset.", example.name)),
+                                        "aria-label": example.description.clone().unwrap_or_else(|| format!("Load the {} example dataset.", example.name)),
+                                        onclick: {
+                                            let url = example.url.clone();
+                                            let load = load.clone();
+                                            move |_| {
+                                                let url = url.clone();
+                                                let load = load.clone();
+                                                let mut status = status;
+                                                status.set(String::from("loading"));
+                                                async move {
+                                                    let fetched = match gloo_net::http::Request::get(&url).send().await {
+                                                        Ok(response) => response.binary().await,
+                                                        Err(error) => Err(error),
+                                                    };
+                                                    match fetched {
+                                                        Ok(bytes) => load(url, bytes, Some(build_method())),
+                                                        Err(error) => {
+                                                            let mut status = status;
+                                                            let mut ingest_error = ingest_error;
+                                                            status.set(String::from("idle"));
+                                                            ingest_error.set(Some(error.to_string()));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        match example.icon {
+                                            Some(ExampleIcon::Numbers) => rsx! {
+                                                Icon { icon: FaCalculator, width: 14, height: 14, class: "decompositions-icon" }
+                                            },
+                                            Some(ExampleIcon::Apparel) => rsx! {
+                                                Icon { icon: FaShirt, width: 14, height: 14, class: "decompositions-icon" }
+                                            },
+                                            Some(ExampleIcon::Network) => rsx! {
+                                                Icon { icon: FaShareNodes, width: 14, height: 14, class: "decompositions-icon" }
+                                            },
+                                            None => rsx! {},
+                                        }
+                                        "{example.name}"
+                                    }
+                                }
+                            }
+                        }
+                        if drop_enabled {
+                            label { r#for: "file-input", class: "decompositions-drophint",
+                                Icon { icon: FaFileArrowUp, width: 16, height: 16, class: "decompositions-icon" }
+                                span { {drop_prompt} }
+                            }
+                            input {
+                                id: "file-input",
+                                r#type: "file",
+                                class: "decompositions-fileinput",
+                                accept: DATA_ACCEPT,
+                                onchange: {
+                                    let load = load.clone();
+                                    move |evt: Event<FormData>| {
+                                        let load = load.clone();
+                                        async move {
+                                            let Some(file) = evt.files().into_iter().next() else {
+                                                return;
+                                            };
+                                            match file.read_bytes().await {
+                                                Ok(bytes) => load(file.name(), bytes.to_vec(), None),
+                                                Err(error) => {
+                                                    let mut ingest_error = ingest_error;
+                                                    ingest_error.set(Some(error.to_string()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            }
+                        }
+                        if let Some(error) = ingest_error.read().as_ref() {
+                            p { id: "ingest-error", class: "decompositions-error",
+                                Icon { icon: FaTriangleExclamation, width: 14, height: 14, class: "decompositions-icon" }
+                                "{error.clone()}"
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Bottom-center media-player transport bar.
+            if controls && dataset.read().is_some() {
+                div { class: "decompositions-transport",
+                    // Play/Pause: hidden while a recording run is in flight, when
+                    // the rec/stop button is the only control.
+                    if !(busy() && (recording_active() || recording_armed())) {
+                        button {
+                            id: "play",
+                            class: "decompositions-iconbtn",
+                            title: if busy() { "Pause" } else { "Play" },
+                            "aria-label": if busy() { "Pause" } else { "Play" },
+                            onclick: toggle_play,
+                            if busy() {
+                                Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
+                            } else {
+                                Icon { icon: FaPlay, width: 15, height: 15, class: "decompositions-icon" }
+                            }
+                        }
+                    }
+                    // Restart (run from scratch) only makes sense while stopped.
+                    if !busy() {
+                        button {
+                            id: "restart",
+                            class: "decompositions-iconbtn",
                             title: HELP_RUN,
                             "aria-label": HELP_RUN,
-                            disabled: dataset.read().is_none() || busy(),
-                            onclick: run,
-                            Icon { icon: FaPlay, width: 14, height: 14, class: "decompositions-icon" }
-                            "Run"
+                            onclick: restart,
+                            Icon { icon: FaRotateLeft, width: 14, height: 14, class: "decompositions-icon" }
                         }
+                    }
+                    // Rec: start a recording run while stopped, or stop it while
+                    // recording. Hidden during a normal (non-recording) run.
+                    if recording_supported() && (!busy() || recording_active() || recording_armed()) {
                         button {
-                            id: "continue",
-                            title: HELP_CONTINUE,
-                            "aria-label": HELP_CONTINUE,
-                            disabled: !can_continue(),
-                            onclick: continue_run,
-                            Icon { icon: FaForwardStep, width: 14, height: 14, class: "decompositions-icon" }
-                            "Continue"
+                            id: "record",
+                            class: if recording_active() || recording_armed() { "decompositions-iconbtn decompositions-rec--active" } else { "decompositions-iconbtn" },
+                            title: HELP_RECORD,
+                            "aria-label": HELP_RECORD,
+                            onclick: rec_toggle,
+                            Icon { icon: FaCircleDot, width: 14, height: 14, class: "decompositions-icon" }
                         }
-                        if has_labels() {
+                    }
+                    div { class: "decompositions-scrubber",
+                        if let Some((indeterminate, fraction)) = progress() {
+                            div {
+                                class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
+                                style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                            }
+                        }
+                    }
+                    span { id: "status", class: "decompositions-status", "{status_display}" }
+                    if recorded_url.read().is_some() && !recording_active() {
+                        button {
+                            id: "download-video",
+                            class: "decompositions-iconbtn",
+                            title: "Download the recorded video",
+                            "aria-label": "Download the recorded video",
+                            onclick: download_video,
+                            Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                        }
+                    }
+                    button {
+                        id: "clear",
+                        class: "decompositions-iconbtn",
+                        title: HELP_CLEAR,
+                        "aria-label": HELP_CLEAR,
+                        onclick: clear,
+                        Icon { icon: FaXmark, width: 15, height: 15, class: "decompositions-icon" }
+                    }
+                }
+            }
+
+            // Right settings sidebar with the tuning parameters.
+            if controls {
+                div {
+                    id: "decompositions-sidebar",
+                    class: if settings_open() { "decompositions-sidebar decompositions-sidebar--open" } else { "decompositions-sidebar" },
+                    p { class: "decompositions-section-title", "Parameters" }
+                    label { class: "decompositions-field", r#for: "perplexity", title: HELP_PERPLEXITY, "aria-label": HELP_PERPLEXITY,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaCircleNodes, width: 14, height: 14, class: "decompositions-icon" }
+                            "Perplexity"
+                        }
+                        input {
+                            id: "perplexity",
+                            r#type: "number",
+                            min: "1",
+                            step: "1",
+                            value: "{perplexity}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    perplexity.set(value.max(1.0));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "theta", title: HELP_THETA, "aria-label": HELP_THETA,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaBullseye, width: 14, height: 14, class: "decompositions-icon" }
+                            "Theta"
+                        }
+                        input {
+                            id: "theta",
+                            r#type: "number",
+                            min: "0.1",
+                            max: "1",
+                            step: "0.1",
+                            value: "{theta}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    theta.set(value.clamp(0.1, 1.0));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "epochs", title: HELP_EPOCHS, "aria-label": HELP_EPOCHS,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaRepeat, width: 14, height: 14, class: "decompositions-icon" }
+                            "Epochs"
+                        }
+                        input {
+                            id: "epochs",
+                            r#type: "number",
+                            min: "1",
+                            step: "50",
+                            value: "{epochs}",
+                            disabled: infinite(),
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<usize>() {
+                                    epochs.set(value.max(1));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "infinite", title: HELP_INFINITE, "aria-label": HELP_INFINITE,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaInfinity, width: 14, height: 14, class: "decompositions-icon" }
+                            "Run forever"
+                        }
+                        input {
+                            id: "infinite",
+                            r#type: "checkbox",
+                            checked: infinite(),
+                            onchange: move |evt| infinite.set(evt.checked()),
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "learning-rate", title: HELP_LEARNING_RATE, "aria-label": HELP_LEARNING_RATE,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaGaugeHigh, width: 14, height: 14, class: "decompositions-icon" }
+                            "Learning rate"
+                        }
+                        input {
+                            id: "learning-rate",
+                            r#type: "number",
+                            min: "1",
+                            step: "10",
+                            value: learning_rate().map(|v| v.to_string()).unwrap_or_default(),
+                            placeholder: match dataset.read().as_ref() {
+                                Some(d) => format!("auto ({:.0})", auto_learning_rate(d.n_samples)),
+                                None => String::from("auto"),
+                            },
+                            onchange: move |evt| {
+                                let text = evt.value();
+                                if text.trim().is_empty() {
+                                    learning_rate.set(None);
+                                } else if let Ok(value) = text.parse::<f32>() {
+                                    learning_rate.set(Some(value.max(1.0)));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "pca-dims", title: HELP_PCA_DIMS, "aria-label": HELP_PCA_DIMS,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaCompress, width: 14, height: 14, class: "decompositions-icon" }
+                            "PCA dimensions"
+                        }
+                        input {
+                            id: "pca-dims",
+                            r#type: "number",
+                            min: "2",
+                            value: "{pca_dims}",
+                            onchange: move |evt| {
+                                if let Ok(dims) = evt.value().parse::<usize>() {
+                                    pca_dims.set(dims.max(2));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "early-exaggeration", title: HELP_EARLY_EXAGGERATION, "aria-label": HELP_EARLY_EXAGGERATION,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaExpand, width: 14, height: 14, class: "decompositions-icon" }
+                            "Early exaggeration"
+                        }
+                        input {
+                            id: "early-exaggeration",
+                            r#type: "number",
+                            min: "1",
+                            step: "1",
+                            value: "{early_exaggeration}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<f32>() {
+                                    early_exaggeration.set(value.max(1.0));
+                                }
+                            },
+                        }
+                    }
+                    label { class: "decompositions-field", r#for: "exaggeration-epochs", title: HELP_EXAGGERATION_EPOCHS, "aria-label": HELP_EXAGGERATION_EPOCHS,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaFire, width: 14, height: 14, class: "decompositions-icon" }
+                            "Exaggeration epochs"
+                        }
+                        input {
+                            id: "exaggeration-epochs",
+                            r#type: "number",
+                            min: "0",
+                            step: "10",
+                            value: "{exaggeration_epochs}",
+                            onchange: move |evt| {
+                                if let Ok(value) = evt.value().parse::<usize>() {
+                                    exaggeration_epochs.set(value);
+                                }
+                            },
+                        }
+                    }
+                    if has_labels() {
+                        p { class: "decompositions-section-title", "Color" }
+                        label { class: "decompositions-field", r#for: "color-source", title: HELP_COLOR_BY, "aria-label": HELP_COLOR_BY,
+                            span { class: "decompositions-field-label",
+                                Icon { icon: FaPalette, width: 14, height: 14, class: "decompositions-icon" }
+                                "Color by"
+                            }
                             select {
                                 id: "color-source",
                                 class: "decompositions-select",
                                 value: "{color_source}",
-                                title: HELP_COLOR_BY,
-                                "aria-label": HELP_COLOR_BY,
                                 onmounted: move |evt| {
                                     color_select.set(
                                         evt.data()
                                             .downcast::<web_sys::Element>()
                                             .and_then(|element| {
-                                                element
-                                                    .clone()
-                                                    .dyn_into::<web_sys::HtmlSelectElement>()
-                                                    .ok()
+                                                element.clone().dyn_into::<web_sys::HtmlSelectElement>().ok()
                                             }),
                                     );
                                 },
                                 onchange: move |evt| color_source.set(evt.value()),
                                 option { value: "none", "no color" }
-                                if let Some(parsed) = dataset.read().as_ref() {
-                                    for column in parsed.label_columns.iter() {
-                                        option { value: "column:{column.name}", "{column.name}" }
-                                    }
-                                }
-                            }
-                        }
-                        if method.read().as_str() == "tsne" {
-                            details {
-                                id: "settings-popover",
-                                class: "decompositions-settings",
-                                open: settings_open(),
-                                summary {
-                                    id: "settings",
-                                    class: "decompositions-settings-summary",
-                                    title: HELP_SETTINGS,
-                                    "aria-label": HELP_SETTINGS,
-                                    // Drive the open state from the signal instead of the native
-                                    // summary toggle, so the outside-click listener can close it too.
-                                    onclick: move |evt| {
-                                        evt.prevent_default();
-                                        let mut settings_open = settings_open;
-                                        settings_open.set(!settings_open());
-                                    },
-                                    Icon { icon: FaSliders, width: 15, height: 15, class: "decompositions-icon" }
-                                }
-                                div { class: "decompositions-settings-panel",
-                                    label { r#for: "perplexity", title: HELP_PERPLEXITY,
-                                        Icon { icon: FaCircleNodes, width: 14, height: 14, class: "decompositions-icon" }
-                                        "Perplexity"
-                                        input {
-                                            id: "perplexity",
-                                            r#type: "number",
-                                            min: "1",
-                                            step: "1",
-                                            value: "{perplexity}",
-                                            onchange: move |evt| {
-                                                if let Ok(value) = evt.value().parse::<f32>() {
-                                                    perplexity.set(value.max(1.0));
-                                                }
-                                            },
-                                        }
-                                    }
-                                    label { r#for: "theta", title: HELP_THETA,
-                                        Icon { icon: FaBullseye, width: 14, height: 14, class: "decompositions-icon" }
-                                        "Theta"
-                                        input {
-                                            id: "theta",
-                                            r#type: "number",
-                                            min: "0.1",
-                                            max: "1",
-                                            step: "0.1",
-                                            value: "{theta}",
-                                            onchange: move |evt| {
-                                                if let Ok(value) = evt.value().parse::<f32>() {
-                                                    theta.set(value.clamp(0.1, 1.0));
-                                                }
-                                            },
-                                        }
-                                    }
-                                    label { r#for: "epochs", title: HELP_EPOCHS,
-                                        Icon { icon: FaRepeat, width: 14, height: 14, class: "decompositions-icon" }
-                                        "Epochs"
-                                        input {
-                                            id: "epochs",
-                                            r#type: "number",
-                                            min: "1",
-                                            step: "50",
-                                            value: "{epochs}",
-                                            onchange: move |evt| {
-                                                if let Ok(value) = evt.value().parse::<usize>() {
-                                                    epochs.set(value.max(1));
-                                                }
-                                            },
-                                        }
-                                    }
-                                    label { r#for: "learning-rate", title: HELP_LEARNING_RATE,
-                                        Icon { icon: FaGaugeHigh, width: 14, height: 14, class: "decompositions-icon" }
-                                        "Learning rate"
-                                        input {
-                                            id: "learning-rate",
-                                            r#type: "number",
-                                            min: "1",
-                                            step: "10",
-                                            // Empty means auto: bhtsne resolves the size-scaled
-                                            // default and the placeholder previews it for the
-                                            // loaded dataset.
-                                            value: learning_rate().map(|v| v.to_string()).unwrap_or_default(),
-                                            placeholder: match dataset.read().as_ref() {
-                                                Some(d) => format!("auto ({:.0})", auto_learning_rate(d.n_samples)),
-                                                None => String::from("auto"),
-                                            },
-                                            onchange: move |evt| {
-                                                let text = evt.value();
-                                                if text.trim().is_empty() {
-                                                    learning_rate.set(None);
-                                                } else if let Ok(value) = text.parse::<f32>() {
-                                                    learning_rate.set(Some(value.max(1.0)));
-                                                }
-                                            },
-                                        }
-                                    }
-                                    label { r#for: "pca-dims", title: HELP_PCA_DIMS,
-                                        Icon { icon: FaCompress, width: 14, height: 14, class: "decompositions-icon" }
-                                        "PCA dimensions"
-                                        input {
-                                            id: "pca-dims",
-                                            r#type: "number",
-                                            min: "2",
-                                            value: "{pca_dims}",
-                                            onchange: move |evt| {
-                                                if let Ok(dims) = evt.value().parse::<usize>() {
-                                                    pca_dims.set(dims.max(2));
-                                                }
-                                            },
-                                        }
-                                    }
-                                    if recording_supported() {
-                                        label {
-                                            r#for: "record-video",
-                                            title: HELP_RECORD,
-                                            Icon { icon: FaVideo, width: 14, height: 14, class: "decompositions-icon" }
-                                            "Record video"
-                                            input {
-                                                id: "record-video",
-                                                r#type: "checkbox",
-                                                checked: recording_armed(),
-                                                // Enabled even before a dataset is loaded, so the
-                                                // user can arm recording first. Capture itself only
-                                                // begins at the first epoch (see the status effect),
-                                                // so the loading frames are skipped, and stops on
-                                                // convergence into a downloadable video.
-                                                onchange: move |evt| {
-                                                    let mut recording_armed = recording_armed;
-                                                    let mut recorded_url = recorded_url;
-                                                    if evt.checked() {
-                                                        if let Some(url) = recorded_url.read().clone() {
-                                                            let _ = web_sys::Url::revoke_object_url(&url);
-                                                        }
-                                                        recorded_url.set(None);
-                                                        recording_armed.set(true);
-                                                    } else {
-                                                        recording_armed.set(false);
-                                                        stop_capture();
-                                                        // Clear the in-flight flag so re-arming during
-                                                        // the same run starts a fresh capture (the effect
-                                                        // only resets it once the animation ends).
-                                                        *capturing.borrow_mut() = false;
-                                                    }
-                                                },
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        p { id: "status", class: "decompositions-status",
-                            Icon { icon: FaCircleInfo, width: 14, height: 14, class: "decompositions-icon" }
-                            "{status}"
-                        }
-                        if recording_active() {
-                            span {
-                                id: "recording-indicator",
-                                class: "decompositions-recording",
-                                title: "Recording the embedding animation",
-                                "aria-label": "Recording the embedding animation",
-                                Icon { icon: FaCircleStop, width: 14, height: 14, class: "decompositions-icon" }
-                                "REC"
-                            }
-                        } else if recorded_url.read().is_some() {
-                            button {
-                                id: "download-video",
-                                class: "decompositions-download",
-                                title: "Download the recorded video",
-                                "aria-label": "Download the recorded video",
-                                onclick: download_video,
-                                Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
-                                "Download video"
-                            }
-                        }
-                        if dataset.read().is_some() {
-                            button {
-                                id: "clear",
-                                class: "decompositions-clear",
-                                title: HELP_CLEAR,
-                                "aria-label": HELP_CLEAR,
-                                onclick: clear,
-                                Icon { icon: FaXmark, width: 16, height: 16, class: "decompositions-icon" }
-                            }
-                        }
-                    }
-                }
-                if let Some((indeterminate, fraction)) = progress() {
-                    div { class: "decompositions-progress",
-                        div {
-                            class: if indeterminate { "decompositions-progress-fill decompositions-progress-fill--indeterminate" } else { "decompositions-progress-fill" },
-                            style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
-                        }
-                    }
-                }
-                div {
-                    class: "decompositions-plot-area",
-                    ondragover: move |evt| {
-                        if drop_enabled {
-                            // The drop event only fires when dragover's default
-                            // is prevented.
-                            evt.prevent_default();
-                            dragging_over.set(true);
-                        }
-                    },
-                    ondragleave: move |_| dragging_over.set(false),
-                    ondrop: {
-                        let load = load.clone();
-                        move |evt: Event<DragData>| {
-                            let zone = drop_zone.clone();
-                            let load = load.clone();
-                            async move {
-                                let Some(zone) = zone else {
-                                    return;
-                                };
-                                evt.prevent_default();
-                                dragging_over.set(false);
-                                let Some(file) = evt.files().into_iter().next() else {
-                                    return;
-                                };
-                                let name = file.name();
-                                let extension = name
-                                    .rsplit('.')
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_ascii_lowercase();
-                                if !zone.allows(&extension) {
-                                    let mut dataset = dataset;
-                                    let mut ingest_error = ingest_error;
-                                    dataset.set(None);
-                                    ingest_error
-                                        .set(Some(format!("unsupported file type .{extension}")));
-                                    return;
-                                }
-                                match file.read_bytes().await {
-                                    Ok(bytes) => load(name, bytes.to_vec(), None),
-                                    Err(error) => {
-                                        let mut ingest_error = ingest_error;
-                                        ingest_error.set(Some(error.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    ScatterPlot {
-                        embedding,
-                        colors: Some(colors.into()),
-                        markers: Some(markers.into()),
-                        draggable: plot_draggable,
-                        on_point_moved,
-                        on_drag_start,
-                        on_drag_end,
-                        pixel_ratio,
-                    }
-                    if (drop_enabled || has_examples) && embedding.read().is_none() {
-                        div {
-                            id: "dropzone",
-                            class: if dragging_over() { "decompositions-empty decompositions-empty--over" } else { "decompositions-empty" },
-                            if busy() {
-                                // The moment loading starts the prompt and example
-                                // buttons give way to a spinner, so the click has
-                                // an immediate, unmistakable effect.
-                                div { id: "loading", class: "decompositions-loading",
-                                    Icon { icon: FaSpinner, width: 32, height: 32, class: "decompositions-icon decompositions-spinner" }
-                                    span { "Loading the dataset" }
-                                }
-                            }
-                            if drop_enabled && !busy() {
-                                label { r#for: "file-input", class: "decompositions-droplabel",
-                                    Icon { icon: FaFileArrowUp, width: 32, height: 32, class: "decompositions-icon" }
-                                    span { {drop_prompt} }
-                                }
-                                input {
-                                    id: "file-input",
-                                    r#type: "file",
-                                    class: "decompositions-fileinput",
-                                    accept: DATA_ACCEPT,
-                                    onchange: {
-                                        let load = load.clone();
-                                        move |evt: Event<FormData>| {
-                                            let load = load.clone();
-                                            async move {
-                                                let Some(file) = evt.files().into_iter().next() else {
-                                                    return;
-                                                };
-                                                match file.read_bytes().await {
-                                                    Ok(bytes) => {
-                                                        load(file.name(), bytes.to_vec(), None)
-                                                    }
-                                                    Err(error) => {
-                                                        let mut ingest_error = ingest_error;
-                                                        ingest_error.set(Some(error.to_string()));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    },
-                                }
-                            }
-                            if has_examples && !busy() {
-                                div { class: "decompositions-examples",
-                                    for (index, example) in examples.iter().enumerate() {
-                                        button {
-                                            id: "load-example-{index}",
-                                            class: "decompositions-example",
-                                            title: "Load the {example.name} example dataset.",
-                                            "aria-label": "Load the {example.name} example dataset.",
-                                            onclick: {
-                                                let url = example.url.clone();
-                                                let load = load.clone();
-                                                move |_| {
-                                                    let url = url.clone();
-                                                    let load = load.clone();
-                                                    // Flip to loading right away, before the fetch,
-                                                    // so the buttons give way to the spinner the
-                                                    // instant the click lands.
-                                                    let mut status = status;
-                                                    status.set(String::from("loading"));
-                                                    async move {
-                                                        let fetched =
-                                                            match gloo_net::http::Request::get(&url)
-                                                                .send()
-                                                                .await
-                                                            {
-                                                                Ok(response) => {
-                                                                    response.binary().await
-                                                                }
-                                                                Err(error) => Err(error),
-                                                            };
-                                                        match fetched {
-                                                            Ok(bytes) => {
-                                                                // Clicking a dataset parses it off
-                                                                // the main thread and runs it right
-                                                                // away. `load` orphans any run in
-                                                                // flight onto a fresh worker so the
-                                                                // new one starts immediately.
-                                                                load(
-                                                                    url,
-                                                                    bytes,
-                                                                    Some(build_method()),
-                                                                );
-                                                            }
-                                                            Err(error) => {
-                                                                let mut status = status;
-                                                                let mut ingest_error = ingest_error;
-                                                                status.set(String::from("idle"));
-                                                                ingest_error
-                                                                    .set(Some(error.to_string()));
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                            "{example.name}"
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(error) = ingest_error.read().as_ref() {
-                                p { id: "ingest-error", class: "decompositions-error",
-                                    Icon { icon: FaTriangleExclamation, width: 14, height: 14, class: "decompositions-icon" }
-                                    "{error.clone()}"
+                                for column in effective_labels.read().iter() {
+                                    option { value: "column:{column.name}", "{column.name}" }
                                 }
                             }
                         }
                     }
-                    if let Some(active) = coloring_result.read().as_ref() {
-                        div { id: "legend", class: "decompositions-legend",
-                            for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
-                                span { class: "decompositions-legend-entry",
+                    if !columns.read().is_empty() {
+                        p {
+                            class: "decompositions-section-title",
+                            title: HELP_COLUMNS,
+                            "aria-label": HELP_COLUMNS,
+                            "Columns"
+                        }
+                        div { class: "decompositions-columns",
+                            for (index, column) in columns.read().iter().enumerate() {
+                                div { class: "decompositions-column-row",
                                     span {
-                                        class: "decompositions-legend-swatch",
-                                        style: "color: {entry.color};",
-                                        "{entry.marker.glyph()}"
+                                        class: "decompositions-column-name",
+                                        title: "{column.name}",
+                                        "{column.name}"
                                     }
-                                    "{entry.label}"
+                                    select {
+                                        title: HELP_COLUMNS,
+                                        "aria-label": HELP_COLUMNS,
+                                        value: match column.role {
+                                            ColumnRole::Feature => "feature",
+                                            ColumnRole::Label => "label",
+                                            ColumnRole::Ignore => "ignore",
+                                        },
+                                        onchange: move |evt| {
+                                            let role = match evt.value().as_str() {
+                                                "feature" => ColumnRole::Feature,
+                                                "label" => ColumnRole::Label,
+                                                _ => ColumnRole::Ignore,
+                                            };
+                                            columns.write()[index].role = role;
+                                        },
+                                        if column.numeric {
+                                            option { value: "feature", "Feature" }
+                                        }
+                                        option { value: "label", "Label" }
+                                        option { value: "ignore", "Ignore" }
+                                    }
                                 }
                             }
-                            if active.legend.len() > MAX_LEGEND_ENTRIES {
-                                span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
+                        }
+                    }
+                }
+            }
+
+            // In-app "About t-SNE" overlay, animated in over the plot.
+            if about_open() {
+                div {
+                    class: "decompositions-about-backdrop",
+                    onclick: move |_| {
+                        let mut about_open = about_open;
+                        about_open.set(false);
+                    },
+                    div {
+                        class: "decompositions-about",
+                        role: "dialog",
+                        "aria-modal": "true",
+                        onclick: move |evt| evt.stop_propagation(),
+                        button {
+                            class: "decompositions-about-close",
+                            title: "Close",
+                            "aria-label": "Close",
+                            onclick: move |_| {
+                                let mut about_open = about_open;
+                                about_open.set(false);
+                            },
+                            Icon { icon: FaXmark, width: 16, height: 16, class: "decompositions-icon" }
+                        }
+                        h2 { "t-SNE" }
+                        p { class: "decompositions-about-sub", "t-distributed Stochastic Neighbor Embedding" }
+
+                        h3 { "What it is" }
+                        p {
+                            "t-SNE is a nonlinear dimensionality-reduction method for visualizing "
+                            "high-dimensional data in two dimensions. It places each point so that "
+                            "points near each other in the original space stay near each other in "
+                            "the picture, which makes local structure and clusters easy to see "
+                            a {
+                                href: "https://www.jmlr.org/papers/v9/vandermaaten08a.html",
+                                target: "_blank",
+                                rel: "noopener",
+                                "(van der Maaten & Hinton, 2008)"
                             }
+                            "."
+                        }
+                        p {
+                            "This tool runs Barnes-Hut t-SNE "
+                            a {
+                                href: "https://www.jmlr.org/papers/v15/vandermaaten14a.html",
+                                target: "_blank",
+                                rel: "noopener",
+                                "(van der Maaten, 2014)"
+                            }
+                            ", an approximation that scales to tens of thousands of points, "
+                            "entirely in your browser on a background worker. The input is first "
+                            "reduced with PCA (50 dimensions by default) to speed up the neighbor "
+                            "search and cut noise, then t-SNE produces the layout you watch evolve. "
+                            "The embedding is initialized from the top principal components rather "
+                            "than from random noise, which preserves the global layout of the data "
+                            "and makes runs reproducible "
+                            a {
+                                href: "https://doi.org/10.1038/s41467-019-13056-x",
+                                target: "_blank",
+                                rel: "noopener",
+                                "(Kobak & Berens, 2019)"
+                            }
+                            " "
+                            a {
+                                href: "https://doi.org/10.1038/s41587-020-00809-z",
+                                target: "_blank",
+                                rel: "noopener",
+                                "(Kobak & Linderman, 2021)"
+                            }
+                            "."
+                        }
+
+                        h3 { "When to use it" }
+                        p {
+                            "Reach for t-SNE when you want to explore high-dimensional data and ask "
+                            "whether it has structure and what clusters together. Common inputs are "
+                            "learned embeddings, image or text feature vectors, single-cell gene "
+                            "expression, and any table of numeric features per sample. It is an "
+                            "exploratory and presentation tool, not a preprocessing step for "
+                            "downstream models."
+                        }
+
+                        h3 { "How to read it (and what not to read into it)" }
+                        p {
+                            "t-SNE maps are powerful but easy to over-interpret. The caveats below "
+                            "are drawn from "
+                            a {
+                                href: "https://distill.pub/2016/misread-tsne/",
+                                target: "_blank",
+                                rel: "noopener",
+                                "(Wattenberg et al., 2016)"
+                            }
+                            ":"
+                        }
+                        ul {
+                            li {
+                                b { "Perplexity matters. " }
+                                "It sets roughly how many neighbors each point considers, and "
+                                "different values give different pictures. 5 to 50 is typical."
+                            }
+                            li {
+                                b { "Cluster sizes are not meaningful. " }
+                                "t-SNE expands dense clusters and contracts sparse ones, so a blob's "
+                                "area says little about how spread out that group really is."
+                            }
+                            li {
+                                b { "Distances between clusters are often not meaningful. " }
+                                "Treat the global arrangement with caution."
+                            }
+                            li {
+                                b { "Let it converge. " }
+                                "Stopping early leaves a half-formed layout. Run enough epochs, or "
+                                "use \"run forever\" and watch."
+                            }
+                            li {
+                                b { "Runs vary. " }
+                                "The optimization is stochastic, so the stable signal is the cluster "
+                                "structure, not the exact positions."
+                            }
+                        }
+                        p {
+                            "The settings panel exposes the knobs that drive all of this: "
+                            "perplexity, the Barnes-Hut accuracy (theta), epochs, learning rate, "
+                            "PCA dimensions, and the early-exaggeration phase."
+                        }
+
+                        h3 { "Built in Rust" }
+                        p {
+                            "This whole tool is Rust compiled to WebAssembly. There is no Python "
+                            "server and no JavaScript framework: the interface, the file parsing, "
+                            "and t-SNE itself all run in your browser."
+                        }
+                        p {
+                            "The optimizer runs in parallel across your CPU cores with Rayon, "
+                            "which now works in the browser through wasm-bindgen-rayon once the "
+                            "page is cross-origin isolated (the COOP and COEP headers). That is "
+                            "why the layout converges in seconds rather than minutes."
+                        }
+                        ul {
+                            li {
+                                a { href: "https://www.rust-lang.org/what/wasm", target: "_blank", rel: "noopener", "Rust and WebAssembly" }
+                            }
+                            li {
+                                a { href: "https://dioxuslabs.com", target: "_blank", rel: "noopener", "Dioxus" }
+                                ", the Rust UI framework rendering this page"
+                            }
+                            li {
+                                a { href: "https://github.com/rayon-rs/rayon", target: "_blank", rel: "noopener", "Rayon" }
+                                " with "
+                                a { href: "https://github.com/RReverser/wasm-bindgen-rayon", target: "_blank", rel: "noopener", "wasm-bindgen-rayon" }
+                                " for threads in the browser"
+                            }
+                            li {
+                                a { href: "https://github.com/frjnn/bhtsne", target: "_blank", rel: "noopener", "bhtsne" }
+                                ", the t-SNE implementation"
+                            }
+                        }
+                        p {
+                            "Modern web development will be written in Rust. "
+                            a { href: "https://xkcd.com/2314/", target: "_blank", rel: "noopener", "Carcinization advances." }
                         }
                     }
                 }

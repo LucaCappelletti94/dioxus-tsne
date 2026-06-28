@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The worker is excluded and its build skipped: wasm-bindgen-rayon
+      # compile_error!s without the nightly atomics target feature, so it only
+      # builds under the build-std recipe in app/build.rs, not here.
+      - run: cargo clippy --workspace --exclude decompositions-worker --all-targets --target wasm32-unknown-unknown -- -D warnings
+        env:
+          DECOMPOSITIONS_SKIP_WORKER_BUILD: "1"
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The compute, ingest and PCA tests live on the root crate and run
+      # natively, so this needs no wasm target and no worker build.
+      - run: cargo test -p dioxus-tsne

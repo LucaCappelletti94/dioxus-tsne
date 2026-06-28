@@ -1,9 +1,17 @@
 //! Builds the dedicated worker wasm bundle into `public/dioxus-decompositions/`,
-//! so plain `dx serve` is the only command needed: dx serves the `public/`
-//! directory verbatim at the site root, and this script runs before the app
-//! compiles. The output directory matches `dioxus_decompositions::DEFAULT_WORKER_URL`
+//! which dx serves verbatim at the site root. This script runs before the app
+//! compiles. The output directory matches `dioxus_tsne::DEFAULT_WORKER_URL`
 //! (`/dioxus-decompositions/loader.js`), the URL the component loads the worker
 //! from by default.
+//!
+//! The worker is always built as a multi-threaded SharedArrayBuffer rayon pool:
+//! a single-threaded worker is unusably slow on real datasets, so it is not an
+//! option. That requires a nightly atomics + build-std compile (driven here
+//! through rustup, leaving the app's own toolchain untouched) and cross-origin
+//! isolation headers (COOP/COEP) at serve time, without which the worker fails
+//! to instantiate the shared memory. Plain `dx serve` sends no such headers, so
+//! the app must be served with them (a static server over a `dx bundle`, or a
+//! `dx serve` patched to emit them).
 //!
 //! wasm-bindgen runs through the `wasm-bindgen-cli-support` library, locked by
 //! Cargo like every other dependency, so no external CLI at a matching version
@@ -49,7 +57,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../src");
     println!("cargo:rerun-if-changed=../worker/Cargo.toml");
     println!("cargo:rerun-if-changed=../worker/src");
-    println!("cargo:rerun-if-env-changed=DECOMPOSITIONS_WORKER_THREADS");
     println!("cargo:rerun-if-env-changed=DECOMPOSITIONS_WORKER_THREAD_CAP");
 
     // Escape hatch for tooling that only needs the app to type check.
@@ -58,23 +65,17 @@ fn main() {
         return;
     }
 
-    // Opt in to the SharedArrayBuffer rayon thread pool. It needs a nightly
-    // atomics + build-std compile and cross-origin isolation headers at serve
-    // time, so the default build stays single threaded and stable.
-    let threads = env::var_os("DECOMPOSITIONS_WORKER_THREADS").is_some();
-    if threads {
-        println!(
-            "cargo:warning=building the worker as a multi-threaded rayon pool (atomics + build-std)"
-        );
-    }
-
-    if let Err(error) = build_worker(threads) {
+    // The worker is always a SharedArrayBuffer rayon thread pool. A
+    // single-threaded worker is unusably slow on real datasets, so it is not a
+    // build option. This needs a nightly atomics + build-std compile here and
+    // cross-origin isolation headers at serve time.
+    if let Err(error) = build_worker() {
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
-fn build_worker(threads: bool) -> Result<(), String> {
+fn build_worker() -> Result<(), String> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR")
             .ok_or_else(|| String::from("cargo did not provide CARGO_MANIFEST_DIR"))?,
@@ -86,31 +87,31 @@ fn build_worker(threads: bool) -> Result<(), String> {
     let out_dir = PathBuf::from(
         env::var_os("OUT_DIR").ok_or_else(|| String::from("cargo did not provide OUT_DIR"))?,
     );
-    // Keep the threaded and plain builds in separate target directories so
-    // toggling the mode does not force a full rebuild of the other.
-    let target_dir = out_dir.join(if threads {
-        "worker-target-threads"
-    } else {
-        "worker-target"
-    });
+    let target_dir = out_dir.join("worker-target");
     let bindgen_dir = out_dir.join("worker-bindgen");
     let public_dir = manifest_dir.join("public/dioxus-decompositions");
 
     // The worker does the heavy numeric lifting, an unoptimized build would
     // make even small datasets crawl, so it is always built with the release
-    // profile regardless of the app profile. The threaded variant additionally
+    // profile regardless of the app profile. The threaded pool additionally
     // needs a nightly atomics build that rebuilds std (build-std), driven
     // through rustup so the app's own toolchain is left untouched.
-    let mut command = if threads {
-        let mut command = Command::new("rustup");
-        command.args(["run", "nightly", "cargo"]);
-        command
-    } else {
-        Command::new(env::var("CARGO").unwrap_or_else(|_| String::from("cargo")))
-    };
+    let mut command = Command::new("rustup");
+    command.args(["run", "nightly", "cargo"]);
     command
         .current_dir(&workspace_root)
+        // dx (and other cargo-driving tools) point the build at their own
+        // compiler through these. Inherited into the nested build they would
+        // make `rustup run nightly` compile nightly's rust-src `core` with a
+        // mismatched rustc, an instant lang-item ICE under build-std. Strip them
+        // so `rustup run nightly` fully controls the toolchain.
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("CARGO")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env("RUSTFLAGS", THREAD_RUSTFLAGS)
         .args([
             "build",
             "--package",
@@ -120,17 +121,9 @@ fn build_worker(threads: bool) -> Result<(), String> {
             "--target",
             "wasm32-unknown-unknown",
             "--release",
-        ]);
-    if threads {
-        command.env("RUSTFLAGS", THREAD_RUSTFLAGS).args([
-            "--features",
-            "threads",
             "-Z",
             "build-std=std,panic_abort",
         ]);
-    } else {
-        command.env_remove("RUSTFLAGS");
-    }
     let status = command
         .args(["--target-dir"])
         .arg(&target_dir)
@@ -190,48 +183,39 @@ fn build_worker(threads: bool) -> Result<(), String> {
         copy_if_changed(&worker_bg, &public_bg)?;
     }
 
-    // The threaded build references wasm-bindgen-rayon's worker helper as a JS
-    // snippet, served alongside the glue. The plain build has no snippets, so
-    // any left over from a previous threaded build are cleared.
+    // wasm-bindgen-rayon's worker helper is emitted as a JS snippet, served
+    // alongside the glue. Clear any stale copy first, then refresh it.
     let public_snippets = public_dir.join("snippets");
     let _ignored = fs::remove_dir_all(&public_snippets);
-    if threads {
-        copy_dir_all(&bindgen_dir.join("snippets"), &public_snippets)?;
-    }
+    copy_dir_all(&bindgen_dir.join("snippets"), &public_snippets)?;
 
-    // The loader passes the wasm URL explicitly: dx minifies the JS it
-    // serves and the transform strips the import.meta.url based default
-    // inside the wasm-bindgen glue, so a bare init() call would receive
-    // undefined and fail to instantiate. In threads mode it then spins up the
-    // rayon pool over all available cores before any compute message arrives.
-    let loader = if threads {
-        // dx bundles this loader together with the wasm-bindgen glue into a
-        // single module, so its import.meta.url (which wasm-bindgen-rayon hands
-        // to the pool workers as the module to re-import) points back here. The
-        // pool workers must therefore skip the init and pool setup below (the
-        // inlined helper instantiates them with the shared module and memory).
-        // Without this guard each pool worker would re-run init and
-        // initThreadPool, recursively spawning workers until memory is
-        // exhausted. They are told apart by the worker's own location: the gloo
-        // worker is created from the served loader URL, the pool workers from a
-        // blob URL, so self.location.href is a blob URL only in the pool
-        // workers (import.meta.url cannot be used here, the pool workers
-        // re-import this same module by its real URL). (The name option
-        // wasm-bindgen-rayon sets is dropped by dx's minifier, so it is unusable
-        // as the discriminator.)
-        let cap = env::var("DECOMPOSITIONS_WORKER_THREAD_CAP")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(DEFAULT_THREAD_CAP);
-        format!(
-            "import init, {{ initThreadPool, register_worker }} from \"./{WORKER_STEM}.js\";\n// dx bundles the glue into this module, so it must re-export the glue's\n// interface: the pool workers re-import this module and call its `default`\n// (init) and `wbg_rayon_start_worker` exports.\nexport * from \"./{WORKER_STEM}.js\";\nexport {{ default }} from \"./{WORKER_STEM}.js\";\n\nif (!self.location.href.startsWith(\"blob:\")) {{\n    await init({{ module_or_path: new URL(\"./{WORKER_STEM}_bg.wasm\", import.meta.url) }});\n    // bhtsne in WASM is fastest with a small pool, the full core count is much\n    // slower (atomics sync overhead), so cap it. See DEFAULT_THREAD_CAP.\n    await initThreadPool(Math.min(navigator.hardwareConcurrency, {cap}));\n    // Only start handling compute once the pool is built, otherwise the first\n    // run would race the pool init and pin the worker to a single thread.\n    register_worker();\n}}\n"
-        )
-    } else {
-        format!(
-            "import init from \"./{WORKER_STEM}.js\";\n\nawait init({{ module_or_path: new URL(\"./{WORKER_STEM}_bg.wasm\", import.meta.url) }});\n"
-        )
-    };
+    // The loader passes the wasm URL explicitly: dx minifies the JS it serves
+    // and the transform strips the import.meta.url based default inside the
+    // wasm-bindgen glue, so a bare init() call would receive undefined and fail
+    // to instantiate. It then spins up the rayon pool before any compute message
+    // arrives.
+    //
+    // dx bundles this loader together with the wasm-bindgen glue into a single
+    // module, so its import.meta.url (which wasm-bindgen-rayon hands to the pool
+    // workers as the module to re-import) points back here. The pool workers
+    // must therefore skip the init and pool setup below (the inlined helper
+    // instantiates them with the shared module and memory). Without this guard
+    // each pool worker would re-run init and initThreadPool, recursively
+    // spawning workers until memory is exhausted. They are told apart by the
+    // worker's own location: the gloo worker is created from the served loader
+    // URL, the pool workers from a blob URL, so self.location.href is a blob URL
+    // only in the pool workers (import.meta.url cannot be used here, the pool
+    // workers re-import this same module by its real URL). (The name option
+    // wasm-bindgen-rayon sets is dropped by dx's minifier, so it is unusable as
+    // the discriminator.)
+    let cap = env::var("DECOMPOSITIONS_WORKER_THREAD_CAP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_THREAD_CAP);
+    let loader = format!(
+        "import init, {{ initThreadPool, register_worker }} from \"./{WORKER_STEM}.js\";\n// dx bundles the glue into this module, so it must re-export the glue's\n// interface: the pool workers re-import this module and call its `default`\n// (init) and `wbg_rayon_start_worker` exports.\nexport * from \"./{WORKER_STEM}.js\";\nexport {{ default }} from \"./{WORKER_STEM}.js\";\n\nif (!self.location.href.startsWith(\"blob:\")) {{\n    await init({{ module_or_path: new URL(\"./{WORKER_STEM}_bg.wasm\", import.meta.url) }});\n    // bhtsne in WASM is fastest with a small pool, the full core count is much\n    // slower (atomics sync overhead), so cap it. See DEFAULT_THREAD_CAP.\n    await initThreadPool(Math.min(navigator.hardwareConcurrency, {cap}));\n    // Only start handling compute once the pool is built, otherwise the first\n    // run would race the pool init and pin the worker to a single thread.\n    register_worker();\n}}\n"
+    );
     write_if_changed(&public_dir.join("loader.js"), loader.into_bytes())?;
     Ok(())
 }

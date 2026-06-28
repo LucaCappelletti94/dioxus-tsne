@@ -1,0 +1,54 @@
+name: Deploy
+
+# Production deploy to Cloudflare Pages, on a pushed tag (e.g. v0.1.0) or by
+# hand. The worker wasm is rebuilt from scratch here, since the generated
+# bundle is no longer committed.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    name: build and deploy
+    runs-on: ubuntu-latest
+    # ~15-20 min cold (build-std + wasm-opt over the worker), well under this.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # nightly first, then stable, so stable stays the default toolchain (dx
+      # builds the app on it) while nightly remains reachable as `rustup run
+      # nightly`, which app/build.rs uses for the worker's atomics + build-std
+      # compile. nightly needs rust-src for build-std.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y dioxus-cli@0.7.9
+
+      # DWARF off: dx defaults debug symbols on, which its wasm-opt cannot parse.
+      - name: Bundle
+        run: dx bundle -p decompositions-app --release --debug-symbols false
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy target/dx/decompositions-app/release/web/public --project-name=dioxus-tsne

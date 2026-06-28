@@ -1,6 +1,6 @@
 //! Tests for the PCA module.
 
-use dioxus_decompositions::pca;
+use dioxus_tsne::pca;
 
 /// Deterministic LCG so the tests need no RNG dependency.
 fn lcg(seed: u64) -> impl FnMut() -> f32 {
