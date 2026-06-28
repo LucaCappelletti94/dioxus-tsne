@@ -26,25 +26,16 @@ readme = "README.md"
 keywords = ["dioxus", "tsne", "pca", "visualization", "wasm"]
 categories = ["visualization", "wasm", "gui"]
 
-[features]
-default = ["parquet"]
-# Parquet ingestion through the Arrow reader. Snappy is the only compression
-# enabled: it is the Parquet default, and the gzip backend (flate2) does not
-# build on wasm32-unknown-unknown.
-parquet = [
-    "dep:arrow-array",
-    "dep:arrow-cast",
-    "dep:arrow-schema",
-    "dep:bytes",
-    "dep:parquet",
-]
-
 [dependencies]
-arrow-array = { version = "58", optional = true }
-arrow-cast = { version = "58", optional = true }
-arrow-schema = { version = "58", optional = true }
+# Arrow IPC / Feather reading plus the shared Arrow record-batch reader that
+# Parquet ingestion also goes through. lz4 only: zstd's backend pulls a C
+# library that does not build on wasm32-unknown-unknown.
+arrow-array = "58"
+arrow-cast = "58"
+arrow-ipc = { version = "58", default-features = false, features = ["lz4"] }
+arrow-schema = "58"
 bhtsne = { git = "https://github.com/frjnn/bhtsne", default-features = false, features = ["wasm_js"] }
-bytes = { version = "1", optional = true }
+bytes = "1"
 csv = "1"
 dioxus.workspace = true
 dioxus-free-icons = { version = "0.10.0", default-features = false, features = [
@@ -58,10 +49,13 @@ js-sys = "0.3"
 # report rayon's global pool size (the active thread count) back to the UI.
 rayon = "1"
 nalgebra = "0.35.0"
+# Parquet ingestion through the Arrow reader. Snappy is the only compression
+# enabled: it is the Parquet default, and the gzip backend (flate2) does not
+# build on wasm32-unknown-unknown.
 parquet = { version = "58", default-features = false, features = [
     "arrow",
     "snap",
-], optional = true }
+] }
 send_wrapper = "0.6.0"
 serde.workspace = true
 wasm-bindgen.workspace = true
