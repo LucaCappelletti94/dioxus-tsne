@@ -293,8 +293,8 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bhtsne"
-version = "0.7.4"
-source = "git+https://github.com/frjnn/bhtsne#547c86540f92f09a767a754a89fa2c7685f88b3d"
+version = "0.7.6"
+source = "git+https://github.com/frjnn/bhtsne#7898b4b292a1e424d98d21d1606e31d64a80f1db"
 dependencies = [
  "getrandom 0.3.4",
  "num-traits",
