@@ -7,6 +7,14 @@ use crate::compute::{TsneCache, decompose_cached};
 use crate::ingest::parse_dataset;
 use crate::messages::{DecompositionMethod, TsnePhase, WorkerRequest, WorkerResponse};
 
+/// Smallest gap between streamed snapshot frames, capping the live preview to
+/// about 30 fps. Snapshots are gated by epoch count upstream, but a small
+/// dataset runs an epoch in well under a millisecond, so without a wall-clock
+/// cap it would post hundreds of frames a second, swamping the main thread (and
+/// churning the GC) into a stutter. The final embedding is delivered separately
+/// as `Done`, so the end state always renders.
+const MIN_FRAME_INTERVAL_MS: f64 = 1000.0 / 30.0;
+
 /// Worker running the decompositions off the main thread.
 ///
 /// Consumers register this type in their worker binary, see the crate level
@@ -124,6 +132,10 @@ fn run_decomposition(
     // worker's message handler), so the wrapper is only ever dereferenced on the
     // thread that created it.
     let snapshot_scope = SendWrapper::new(scope.clone());
+    // Wall-clock frame cap on top of the upstream per-epoch gating, so a
+    // cheap-per-epoch dataset does not flood the main thread. `NEG_INFINITY`
+    // lets the first snapshot through immediately.
+    let mut last_emit = f64::NEG_INFINITY;
     let outcome = decompose_cached(
         data,
         n_samples,
@@ -131,6 +143,11 @@ fn run_decomposition(
         method,
         cache,
         move |epoch, embedding| {
+            let now = js_sys::Date::now();
+            if now - last_emit < MIN_FRAME_INTERVAL_MS {
+                return;
+            }
+            last_emit = now;
             let phase = if epoch < stop_lying {
                 TsnePhase::EarlyExaggeration
             } else {
@@ -142,7 +159,7 @@ fn run_decomposition(
                     epoch,
                     embedding: embedding.to_vec(),
                     phase,
-                    elapsed_ms: js_sys::Date::now() - start,
+                    elapsed_ms: now - start,
                     threads,
                 },
             );
