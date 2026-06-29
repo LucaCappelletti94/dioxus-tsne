@@ -138,6 +138,10 @@ fn project_to_viewport(points: &[f32], width: f32, height: f32, margin: f32) -> 
 /// [`FILL_ALPHA`]).
 const DEFAULT_COLOR: &str = "#1f77b4";
 
+/// Color of points outside the focused class while a legend entry is hovered or
+/// pinned, so only the focused class keeps its real color and stands out.
+const DIMMED_COLOR: &str = "#d8d8d8";
+
 /// Opacity of marker fills, so dense regions read as darker where points
 /// overlap. The same-color border is drawn fully opaque.
 const FILL_ALPHA: f64 = 0.82;
@@ -200,10 +204,12 @@ fn draw(
     points: &[f32],
     colors: Option<&[String]>,
     markers: Option<&[Marker]>,
+    highlight: Option<(&str, Marker)>,
     width: u32,
     height: u32,
     ratio: f64,
     transform_override: Option<Transform>,
+    opaque_background: bool,
 ) -> Option<Transform> {
     let context = canvas
         .get_context("2d")
@@ -219,9 +225,12 @@ fn draw(
     context.clear_rect(0.0, 0.0, f64::from(width), f64::from(height));
     // Paint an opaque background so the canvas is not transparent: a transparent
     // canvas reads as white over the page but is encoded as black when the
-    // animation is captured to a video, see the recording feature.
-    context.set_fill_style_str(PLOT_BACKGROUND);
-    context.fill_rect(0.0, 0.0, f64::from(width), f64::from(height));
+    // animation is captured to a video, see the recording feature. The PNG
+    // snapshot wants a transparent background instead, so it opts out.
+    if opaque_background {
+        context.set_fill_style_str(PLOT_BACKGROUND);
+        context.fill_rect(0.0, 0.0, f64::from(width), f64::from(height));
+    }
 
     let transform = transform_override
         .or_else(|| Transform::fit(points, width as f32, height as f32, MARGIN))?;
@@ -241,8 +250,15 @@ fn draw(
     let markers = markers.filter(|m| m.len() == n);
     let mut batches: Vec<(&str, Marker, Vec<usize>)> = Vec::new();
     for index in 0..n {
-        let color = colors.map_or(DEFAULT_COLOR, |c| c[index].as_str());
+        let base = colors.map_or(DEFAULT_COLOR, |c| c[index].as_str());
         let marker = markers.map_or(Marker::Circle, |m| m[index]);
+        // While a class is focused, every point outside it is greyed so the
+        // focused class stands out. A class is the (color, marker) pair, which
+        // is unique per category.
+        let color = match highlight {
+            Some((hc, hm)) if base != hc || marker != hm => DIMMED_COLOR,
+            _ => base,
+        };
         match batches
             .iter_mut()
             .find(|(c, m, _)| *c == color && *m == marker)
@@ -250,6 +266,11 @@ fn draw(
             Some((_, _, indices)) => indices.push(index),
             None => batches.push((color, marker, vec![index])),
         }
+    }
+
+    // Draw the greyed points first so the focused class paints on top of them.
+    if highlight.is_some() {
+        batches.sort_by_key(|(color, _, _)| *color != DIMMED_COLOR);
     }
 
     // Shaped markers look better but cost a path each, rectangles keep huge
@@ -286,6 +307,40 @@ fn draw(
     }
 
     Some(transform)
+}
+
+/// Renders the current embedding to an offscreen square canvas with a
+/// transparent background and returns it as a PNG data URL, for the snapshot
+/// download. Unlike the on-screen plot (full-bleed and opaque, so it records to
+/// video cleanly), this frames the embedding into a square sized to the data,
+/// so the saved picture is tight and drops straight onto any background.
+///
+/// `size` is the square's logical side in pixels, rendered at the device pixel
+/// ratio for crispness. Returns `None` if the canvas cannot be created or there
+/// is nothing to draw.
+pub(crate) fn snapshot_png(
+    points: &[f32],
+    colors: Option<&[String]>,
+    markers: Option<&[Marker]>,
+    highlight: Option<(&str, Marker)>,
+    size: u32,
+) -> Option<String> {
+    let document = web_sys::window()?.document()?;
+    let canvas: HtmlCanvasElement = document
+        .create_element("canvas")
+        .ok()?
+        .dyn_into::<HtmlCanvasElement>()
+        .ok()?;
+    let ratio = web_sys::window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0)
+        .clamp(1.0, 4.0);
+    canvas.set_width((f64::from(size) * ratio).round() as u32);
+    canvas.set_height((f64::from(size) * ratio).round() as u32);
+    draw(
+        &canvas, points, colors, markers, highlight, size, size, ratio, None, false,
+    )?;
+    canvas.to_data_url_with_type("image/png").ok()
 }
 
 /// In-progress drag of a single point: the pointer that started it, the index
@@ -348,6 +403,7 @@ pub fn ScatterPlot(
     embedding: ReadSignal<Option<Vec<f32>>>,
     #[props(default = None)] colors: Option<ReadSignal<Option<Vec<String>>>>,
     #[props(default = None)] markers: Option<ReadSignal<Option<Vec<Marker>>>>,
+    #[props(default = None)] highlight: Option<ReadSignal<Option<(String, Marker)>>>,
     #[props(default = None)] draggable: Option<ReadSignal<bool>>,
     #[props(default = None)] on_point_moved: Option<EventHandler<(usize, f32, f32)>>,
     #[props(default = None)] on_drag_start: Option<EventHandler<usize>>,
@@ -391,6 +447,7 @@ pub fn ScatterPlot(
         };
         let colors = colors.map(|c| c.read().clone()).unwrap_or_default();
         let markers = markers.map(|m| m.read().clone()).unwrap_or_default();
+        let highlight = highlight.and_then(|h| h.read().clone());
         let override_transform = drag().map(|state| state.transform);
         let used = match embedding.read().as_ref() {
             Some(points) => draw(
@@ -398,10 +455,12 @@ pub fn ScatterPlot(
                 points,
                 colors.as_deref(),
                 markers.as_deref(),
+                highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
                 width,
                 height,
                 ratio,
                 override_transform,
+                true,
             ),
             None => {
                 if let Some(context) = canvas

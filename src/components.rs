@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::color::{Coloring, colorize};
+use crate::color::{ColorScale, Coloring, Marker, colorize};
 use crate::ingest::{Dataset, LabelColumn};
 use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest, WorkerResponse};
 use crate::plot::ScatterPlot;
@@ -19,10 +19,10 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBullseye, FaCalculator, FaCircleDot, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload,
-    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaHeart, FaInfinity, FaPalette, FaPause, FaPlay,
-    FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTriangleExclamation,
-    FaXmark,
+    FaBan, FaBullseye, FaCalculator, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload,
+    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaInfinity,
+    FaPalette, FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders,
+    FaSpinner, FaTag, FaTrashCan, FaTriangleExclamation, FaVideo, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -39,6 +39,22 @@ const INFINITE_EPOCHS: usize = 500_000;
 /// "thread" or "threads", to read naturally next to a pool size in the status.
 fn thread_word(threads: usize) -> &'static str {
     if threads == 1 { "thread" } else { "threads" }
+}
+
+/// Plain-language explanation of a fitting phase, shown when the status line's
+/// phase label is hovered.
+fn phase_help(phase: TsnePhase) -> &'static str {
+    match phase {
+        TsnePhase::FindingNeighbors => {
+            "Building each point's nearest-neighbor graph in the original high-dimensional space, before the layout starts."
+        }
+        TsnePhase::EarlyExaggeration => {
+            "An opening phase that inflates the pull between neighbors so clusters separate before the layout is fine-tuned."
+        }
+        TsnePhase::Optimizing => {
+            "Refining the 2-D layout by gradient descent, balancing attraction to neighbors against repulsion from everything else."
+        }
+    }
 }
 
 /// Current viewport size in CSS pixels, the logical canvas size for the
@@ -69,6 +85,24 @@ enum ColumnRole {
     Feature,
     Label,
     Ignore,
+}
+
+/// Live numbers behind the status line, kept structured (not only as the
+/// formatted string) so each part can show its own explanation on hover.
+#[derive(Clone, Copy, PartialEq)]
+enum RunInfo {
+    /// A snapshot mid-run.
+    Running {
+        epoch: usize,
+        elapsed_s: f64,
+        threads: usize,
+    },
+    /// The finished fit.
+    Done {
+        elapsed_s: f64,
+        threads: usize,
+        kl: Option<f32>,
+    },
 }
 
 /// Where a column's values live in the parsed [`Dataset`]: either a column of
@@ -196,6 +230,15 @@ const HELP_SETTINGS: &str = "Advanced t-SNE settings.";
 const HELP_RECORD: &str = "Record the scatter plot animation as a WebM video. Toggle while a run is active to capture the embedding evolving.";
 const HELP_CLEAR: &str = "Clear the dataset and result, returning to the start.";
 
+// Status-line tooltips: short explanations so a newcomer can learn the terms by
+// hovering them while the fit runs.
+const HELP_STATUS_EPOCH: &str = "An epoch is one full optimization pass over every point. t-SNE nudges the layout a little on each pass, so more epochs means a more settled map.";
+const HELP_STATUS_DONE: &str = "The fit has finished: it used up the epoch budget (or you paused it). The scatter plot below is the result.";
+const HELP_STATUS_THREADS: &str = "How many CPU cores the fit is using at once. It runs on a SharedArrayBuffer thread pool right in your browser, with no server involved.";
+const HELP_STATUS_ELAPSED: &str = "Wall-clock time spent fitting so far.";
+const HELP_STATUS_KL: &str = "Kullback-Leibler divergence: how faithfully the 2-D map preserves the original high-dimensional neighborhoods. It is the quantity t-SNE minimizes, so lower is a better fit.";
+const HELP_STATUS_LOADING: &str = "Reading and parsing your file off the main thread.";
+
 /// File input `accept` attribute.
 const DATA_ACCEPT: &str = ".csv,.tsv,.parquet,.arrow,.feather,.npy";
 
@@ -218,6 +261,7 @@ fn spawn_bridge(
     dataset: Signal<Option<Dataset>>,
     ingest_error: Signal<Option<String>>,
     color_source: Signal<String>,
+    run_info: Signal<Option<RunInfo>>,
 ) -> WorkerBridge<DecompositionWorker> {
     DecompositionWorker::spawner()
         // The URL points at a loader module that initializes the wasm-bindgen
@@ -231,6 +275,7 @@ fn spawn_bridge(
             let mut dataset = dataset;
             let mut ingest_error = ingest_error;
             let mut color_source = color_source;
+            let mut run_info = run_info;
             match response {
                 WorkerResponse::Loaded { dataset: parsed } => {
                     // Parsing happened off the main thread; adopt the result,
@@ -269,6 +314,11 @@ fn spawn_bridge(
                         elapsed_ms / 1000.0,
                         thread_word(threads)
                     ));
+                    run_info.set(Some(RunInfo::Running {
+                        epoch,
+                        elapsed_s: elapsed_ms / 1000.0,
+                        threads,
+                    }));
                     embedding.set(Some(snapshot));
                 }
                 WorkerResponse::Done {
@@ -283,10 +333,16 @@ fn spawn_bridge(
                         Some(kl) => format!("done in {seconds:.1}s ({pool}), KL {kl:.4}"),
                         None => format!("done in {seconds:.1}s ({pool})"),
                     });
+                    run_info.set(Some(RunInfo::Done {
+                        elapsed_s: seconds,
+                        threads,
+                        kl: kl_divergence,
+                    }));
                     embedding.set(Some(done));
                 }
                 WorkerResponse::Error { message } => {
                     status.set(format!("error: {message}"));
+                    run_info.set(None);
                 }
             }
         })
@@ -603,6 +659,18 @@ fn DecompositionView(config: Decomposition) -> Element {
     let status = use_signal(|| String::from("idle"));
     let phase = use_signal(|| None::<TsnePhase>);
     let embedding = use_signal(|| None::<Vec<f32>>);
+    // Structured numbers for the status line, set alongside `status` from the
+    // worker responses (see `spawn_bridge`).
+    let run_info = use_signal(|| None::<RunInfo>);
+    // A new run (file parsing or the affinity setup) clears any prior run's
+    // numbers so the status line never shows stale info during it. The first
+    // snapshot then sets fresh Running numbers.
+    use_effect(move || {
+        if matches!(status.read().as_str(), "running" | "loading") {
+            let mut run_info = run_info;
+            run_info.set(None);
+        }
+    });
     // Canvas size, tracking the viewport so the plot fills the page and refits
     // on resize (a window resize listener is installed below).
     let viewport = use_signal(window_size);
@@ -692,27 +760,30 @@ fn DecompositionView(config: Decomposition) -> Element {
     let colors = use_memo(move || coloring_result.read().as_ref().map(|c| c.colors.clone()));
     let markers = use_memo(move || coloring_result.read().as_ref().map(|c| c.markers.clone()));
 
+    // Legend focus: hovering a class dims every other class to grey
+    // temporarily, clicking a class pins that dimming on until it is clicked
+    // again or a click lands outside the legend. Hover takes precedence over the
+    // pin while it lasts. Only categorical colorings have per-class entries to
+    // focus, the continuous scale's legend is just its extremes.
+    let legend_hovered = use_signal(|| None::<usize>);
+    let legend_pinned = use_signal(|| None::<usize>);
+    let highlight = use_memo(move || -> Option<(String, Marker)> {
+        let coloring = coloring_result.read();
+        let coloring = coloring.as_ref()?;
+        if coloring.scale != ColorScale::Categorical {
+            return None;
+        }
+        let index = legend_hovered().or(legend_pinned())?;
+        coloring
+            .legend
+            .get(index)
+            .map(|e| (e.color.clone(), e.marker))
+    });
+
     // The worker is busy while parsing ("loading") or running.
     let busy = use_memo(move || {
         let status = status.read();
         matches!(status.as_str(), "running" | "loading") || status.starts_with("epoch ")
-    });
-    // The status line with the current t-SNE phase folded in. The phase is only
-    // shown while it is meaningful: "Finding neighbors" during the pre-epoch
-    // affinity build (status is still "running"), and the epoch phase prefixed
-    // to the streaming epoch line. A stale phase from a previous run is ignored
-    // because it is gated on the live status, so idle/done/error show as is.
-    let status_display = use_memo(move || {
-        let status = status.read();
-        match *phase.read() {
-            Some(TsnePhase::FindingNeighbors) if status.as_str() == "running" => {
-                String::from(TsnePhase::FindingNeighbors.label())
-            }
-            Some(phase) if status.starts_with("epoch ") => {
-                format!("{} - {status}", phase.label())
-            }
-            _ => status.clone(),
-        }
     });
     // Text for the spinner shown over the empty plot before the first embedding
     // streams back. It must track the phase too: a fresh run has no embedding
@@ -769,6 +840,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             dataset,
             ingest_error,
             color_source,
+            run_info,
         )))
     });
 
@@ -862,6 +934,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     dataset,
                     ingest_error,
                     color_source,
+                    run_info,
                 );
             }
             let mut status = status;
@@ -967,6 +1040,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     dataset,
                     ingest_error,
                     color_source,
+                    run_info,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1005,6 +1079,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     dataset,
                     ingest_error,
                     color_source,
+                    run_info,
                 );
             }
             // Stop and discard any recording, armed or finished.
@@ -1027,10 +1102,12 @@ fn DecompositionView(config: Decomposition) -> Element {
             let mut ingest_error = ingest_error;
             let mut color_source = color_source;
             let mut resume_pending = resume_pending;
+            let mut run_info = run_info;
             dataset.set(None);
             embedding.set(None);
             status.set(String::from("idle"));
             ingest_error.set(None);
+            run_info.set(None);
             color_source.set(String::from("none"));
             resume_pending.set(false);
         }
@@ -1185,6 +1262,39 @@ fn DecompositionView(config: Decomposition) -> Element {
         recorded_url.set(None);
     };
 
+    // Downloads the current frame as a PNG. Rendered to a fresh square canvas
+    // framed to the embedding (not the full-bleed page) with a transparent
+    // background, so the picture is tight and drops onto any backdrop.
+    let download_image = move |_| {
+        let embedding = embedding.read();
+        let Some(points) = embedding.as_ref() else {
+            return;
+        };
+        let colors = colors.read();
+        let markers = markers.read();
+        let highlight = highlight.read();
+        let (vw, vh) = viewport();
+        let size = vw.min(vh).max(1);
+        let Some(data_url) = crate::plot::snapshot_png(
+            points,
+            colors.as_deref(),
+            markers.as_deref(),
+            highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
+            size,
+        ) else {
+            return;
+        };
+        if let Some(anchor) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.create_element("a").ok())
+            .and_then(|element| element.dyn_into::<web_sys::HtmlAnchorElement>().ok())
+        {
+            anchor.set_href(&data_url);
+            anchor.set_download("tsne.png");
+            anchor.click();
+        }
+    };
+
     // Transport controls (media-player style). Pause freezes a running fit by
     // orphaning its worker (it self-closes after its current run) and installing
     // a fresh idle one, so Play can warm-start from the frozen layout.
@@ -1201,6 +1311,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     dataset,
                     ingest_error,
                     color_source,
+                    run_info,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1296,6 +1407,14 @@ fn DecompositionView(config: Decomposition) -> Element {
     rsx! {
         div {
             class: "decompositions-explorer",
+            // A click anywhere outside the legend clears a pinned focus (the
+            // legend stops propagation of its own clicks).
+            onclick: move |_| {
+                let mut legend_pinned = legend_pinned;
+                if legend_pinned().is_some() {
+                    legend_pinned.set(None);
+                }
+            },
             // The whole page is the drop target.
             ondragover: move |evt| {
                 if drop_enabled {
@@ -1342,22 +1461,13 @@ fn DecompositionView(config: Decomposition) -> Element {
                 style { {crate::DEFAULT_STYLE} }
             }
 
-            // Progress bar pinned to the very top edge of the viewport.
-            if let Some((indeterminate, fraction)) = progress() {
-                div { class: "decompositions-progress",
-                    div {
-                        class: if indeterminate { "decompositions-progress-fill decompositions-progress-fill--indeterminate" } else { "decompositions-progress-fill" },
-                        style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
-                    }
-                }
-            }
-
             // Full-bleed plot.
             div { class: "decompositions-plot-area",
                 ScatterPlot {
                     embedding,
                     colors: Some(colors.into()),
                     markers: Some(markers.into()),
+                    highlight: Some(highlight.into()),
                     draggable: plot_draggable,
                     on_point_moved,
                     on_drag_start,
@@ -1368,21 +1478,57 @@ fn DecompositionView(config: Decomposition) -> Element {
                 }
             }
 
-            // Color legend overlay (keeps data colors).
+            // Color legend overlay (keeps data colors). For categorical scales
+            // the entries focus their class on hover and pin it on click.
             if let Some(active) = coloring_result.read().as_ref() {
-                div { id: "legend", class: "decompositions-legend",
-                    for entry in active.legend.iter().take(MAX_LEGEND_ENTRIES) {
-                        span { class: "decompositions-legend-entry",
-                            span {
-                                class: "decompositions-legend-swatch",
-                                style: "color: {entry.color};",
-                                "{entry.marker.glyph()}"
+                {
+                    let interactive = active.scale == ColorScale::Categorical;
+                    rsx! {
+                        div {
+                            id: "legend",
+                            class: if interactive { "decompositions-legend decompositions-legend--interactive" } else { "decompositions-legend" },
+                            // Keep clicks inside the legend from clearing the pin.
+                            onclick: move |evt| evt.stop_propagation(),
+                            for (index, entry) in active.legend.iter().take(MAX_LEGEND_ENTRIES).enumerate() {
+                                span {
+                                    class: if interactive && legend_pinned() == Some(index) {
+                                        "decompositions-legend-entry decompositions-legend-entry--pinned"
+                                    } else {
+                                        "decompositions-legend-entry"
+                                    },
+                                    onmouseenter: move |_| {
+                                        if interactive {
+                                            let mut legend_hovered = legend_hovered;
+                                            legend_hovered.set(Some(index));
+                                        }
+                                    },
+                                    onmouseleave: move |_| {
+                                        if interactive {
+                                            let mut legend_hovered = legend_hovered;
+                                            legend_hovered.set(None);
+                                        }
+                                    },
+                                    onclick: move |_| {
+                                        if interactive {
+                                            let mut legend_pinned = legend_pinned;
+                                            let next = if legend_pinned() == Some(index) { None } else { Some(index) };
+                                            legend_pinned.set(next);
+                                        }
+                                    },
+                                    span {
+                                        class: "decompositions-legend-swatch",
+                                        style: "color: {entry.color};",
+                                        "{entry.marker.glyph()}"
+                                    }
+                                    "{entry.label}"
+                                }
                             }
-                            "{entry.label}"
+                            if active.legend.len() > MAX_LEGEND_ENTRIES {
+                                span { class: "decompositions-legend-more",
+                                    "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)"
+                                }
+                            }
                         }
-                    }
-                    if active.legend.len() > MAX_LEGEND_ENTRIES {
-                        span { "(+{active.legend.len() - MAX_LEGEND_ENTRIES} more)" }
                     }
                 }
             }
@@ -1391,10 +1537,16 @@ fn DecompositionView(config: Decomposition) -> Element {
             if controls {
                 div { class: "decompositions-topbar",
                     div { class: "decompositions-brand",
-                        if let Some(logo) = logo.as_ref() {
-                            img { class: "decompositions-logo", src: "{logo}", alt: "dioxus-decompositions" }
-                        } else {
-                            span { "dioxus-decompositions" }
+                        a {
+                            class: "decompositions-brand-link",
+                            href: "/",
+                            title: "Reload",
+                            "aria-label": "Reload the page",
+                            if let Some(logo) = logo.as_ref() {
+                                img { class: "decompositions-logo", src: "{logo}", alt: "dioxus-decompositions" }
+                            } else {
+                                span { "dioxus-decompositions" }
+                            }
                         }
                     }
                     div { class: "decompositions-topbar-actions",
@@ -1557,71 +1709,150 @@ fn DecompositionView(config: Decomposition) -> Element {
             // Bottom-center media-player transport bar.
             if controls && dataset.read().is_some() {
                 div { class: "decompositions-transport",
-                    // Play/Pause: hidden while a recording run is in flight, when
-                    // the rec/stop button is the only control.
-                    if !(busy() && (recording_active() || recording_armed())) {
-                        button {
-                            id: "play",
-                            class: "decompositions-iconbtn",
-                            title: if busy() { "Pause" } else { "Play" },
-                            "aria-label": if busy() { "Pause" } else { "Play" },
-                            onclick: toggle_play,
-                            if busy() {
-                                Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
-                            } else {
-                                Icon { icon: FaPlay, width: 15, height: 15, class: "decompositions-icon" }
+                    div { class: "decompositions-transport-row",
+                        // Play/Pause: hidden while a recording run is in flight,
+                        // when the rec/stop button is the only control.
+                        if !(busy() && (recording_active() || recording_armed())) {
+                            button {
+                                id: "play",
+                                class: "decompositions-iconbtn decompositions-tp-play",
+                                title: if busy() { "Pause" } else { "Play" },
+                                "aria-label": if busy() { "Pause" } else { "Play" },
+                                onclick: toggle_play,
+                                if busy() {
+                                    Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
+                                } else {
+                                    Icon { icon: FaPlay, width: 15, height: 15, class: "decompositions-icon" }
+                                }
                             }
                         }
-                    }
-                    // Restart (run from scratch) only makes sense while stopped.
-                    if !busy() {
-                        button {
-                            id: "restart",
-                            class: "decompositions-iconbtn",
-                            title: HELP_RUN,
-                            "aria-label": HELP_RUN,
-                            onclick: restart,
-                            Icon { icon: FaRotateLeft, width: 14, height: 14, class: "decompositions-icon" }
-                        }
-                    }
-                    // Rec: start a recording run while stopped, or stop it while
-                    // recording. Hidden during a normal (non-recording) run.
-                    if recording_supported() && (!busy() || recording_active() || recording_armed()) {
-                        button {
-                            id: "record",
-                            class: if recording_active() || recording_armed() { "decompositions-iconbtn decompositions-rec--active" } else { "decompositions-iconbtn" },
-                            title: HELP_RECORD,
-                            "aria-label": HELP_RECORD,
-                            onclick: rec_toggle,
-                            Icon { icon: FaCircleDot, width: 14, height: 14, class: "decompositions-icon" }
-                        }
-                    }
-                    div { class: "decompositions-scrubber",
-                        if let Some((indeterminate, fraction)) = progress() {
-                            div {
-                                class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
-                                style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                        // Restart (run from scratch) only makes sense while stopped.
+                        if !busy() {
+                            button {
+                                id: "restart",
+                                class: "decompositions-iconbtn decompositions-tp-restart",
+                                title: HELP_RUN,
+                                "aria-label": HELP_RUN,
+                                onclick: restart,
+                                Icon { icon: FaRotateLeft, width: 14, height: 14, class: "decompositions-icon" }
                             }
                         }
-                    }
-                    span { id: "status", class: "decompositions-status", "{status_display}" }
-                    if recorded_url.read().is_some() && !recording_active() {
+                        // Rec: start a recording run while stopped, or stop it
+                        // while recording. Hidden during a normal run.
+                        if recording_supported() && (!busy() || recording_active() || recording_armed()) {
+                            button {
+                                id: "record",
+                                class: if recording_active() || recording_armed() { "decompositions-iconbtn decompositions-tp-rec decompositions-rec--active" } else { "decompositions-iconbtn decompositions-tp-rec" },
+                                title: HELP_RECORD,
+                                "aria-label": HELP_RECORD,
+                                onclick: rec_toggle,
+                                Icon { icon: FaVideo, width: 15, height: 15, class: "decompositions-icon" }
+                            }
+                        }
+                        // Snapshot the current frame as a PNG. Available whenever
+                        // there is a frame to capture, running or stopped.
+                        if embedding.read().is_some() {
+                            button {
+                                id: "snapshot",
+                                class: "decompositions-iconbtn decompositions-tp-snap",
+                                title: "Download a PNG of the current frame",
+                                "aria-label": "Download a PNG of the current frame",
+                                onclick: download_image,
+                                Icon { icon: FaImage, width: 14, height: 14, class: "decompositions-icon" }
+                            }
+                        }
+                        // Loading bar: contracts away when no run is in flight.
+                        div {
+                            class: if progress().is_some() { "decompositions-scrubber decompositions-scrubber--active" } else { "decompositions-scrubber" },
+                            if let Some((indeterminate, fraction)) = progress() {
+                                div {
+                                    class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
+                                    style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                                }
+                            }
+                        }
+                        if recorded_url.read().is_some() && !recording_active() {
+                            button {
+                                id: "download-video",
+                                class: "decompositions-iconbtn decompositions-tp-snap",
+                                title: "Download the recorded video",
+                                "aria-label": "Download the recorded video",
+                                onclick: download_video,
+                                Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                            }
+                        }
                         button {
-                            id: "download-video",
-                            class: "decompositions-iconbtn",
-                            title: "Download the recorded video",
-                            "aria-label": "Download the recorded video",
-                            onclick: download_video,
-                            Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                            id: "clear",
+                            class: "decompositions-iconbtn decompositions-tp-clear",
+                            title: HELP_CLEAR,
+                            "aria-label": HELP_CLEAR,
+                            onclick: clear,
+                            Icon { icon: FaTrashCan, width: 14, height: 14, class: "decompositions-icon" }
                         }
                     }
-                    button {
-                        id: "clear",
-                        class: "decompositions-iconbtn",
-                        title: HELP_CLEAR,
-                        "aria-label": HELP_CLEAR,
-                        onclick: clear,
-                        Icon { icon: FaXmark, width: 15, height: 15, class: "decompositions-icon" }
+                    // Second line: the live status, each part hover-explained so a
+                    // newcomer can learn the terms. Hidden when idle.
+                    {
+                        let status_str = status.read().clone();
+                        let info = *run_info.read();
+                        let current_phase = *phase.read();
+                        let total = epochs();
+                        let is_infinite = infinite();
+                        if let Some(error) = status_str.strip_prefix("error: ") {
+                            rsx! {
+                                div { class: "decompositions-statusline decompositions-statusline--error",
+                                    Icon { icon: FaTriangleExclamation, width: 12, height: 12, class: "decompositions-icon" }
+                                    span { "{error}" }
+                                }
+                            }
+                        } else {
+                            match info {
+                                Some(RunInfo::Running { epoch, elapsed_s, threads }) => {
+                                    let epoch_text = if is_infinite { format!("epoch {epoch}") } else { format!("epoch {epoch}/{total}") };
+                                    rsx! {
+                                        div { class: "decompositions-statusline",
+                                            if let Some(ph) = current_phase {
+                                                span { class: "decompositions-statseg", title: phase_help(ph), "{ph.label()}" }
+                                            }
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_EPOCH, "{epoch_text}" }
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_ELAPSED, "{elapsed_s:.1}s" }
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_THREADS, "{threads} {thread_word(threads)}" }
+                                        }
+                                    }
+                                }
+                                Some(RunInfo::Done { elapsed_s, threads, kl }) => {
+                                    rsx! {
+                                        div { class: "decompositions-statusline",
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_DONE, "Done" }
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_ELAPSED, "in {elapsed_s:.1}s" }
+                                            span { class: "decompositions-statseg", title: HELP_STATUS_THREADS, "{threads} {thread_word(threads)}" }
+                                            if let Some(kl) = kl {
+                                                span { class: "decompositions-statseg", title: HELP_STATUS_KL, "KL {kl:.4}" }
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    // Before the first snapshot: the loading or
+                                    // neighbor-search phase, or nothing when idle.
+                                    let segment = match status_str.as_str() {
+                                        "loading" => Some(("Loading the dataset".to_string(), HELP_STATUS_LOADING)),
+                                        "running" => current_phase
+                                            .map(|ph| (ph.label().to_string(), phase_help(ph))),
+                                        _ => None,
+                                    };
+                                    if let Some((text, help)) = segment {
+                                        rsx! {
+                                            div { class: "decompositions-statusline",
+                                                span { class: "decompositions-statseg", title: help, "{text}" }
+                                            }
+                                        }
+                                    } else {
+                                        rsx! {}
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1807,19 +2038,46 @@ fn DecompositionView(config: Decomposition) -> Element {
                         }
                     }
                     if !columns.read().is_empty() {
-                        p {
-                            class: "decompositions-section-title",
-                            title: HELP_COLUMNS,
-                            "aria-label": HELP_COLUMNS,
-                            "Columns"
+                        {
+                            let cols = columns.read();
+                            let features = cols.iter().filter(|c| c.role == ColumnRole::Feature).count();
+                            let labels = cols.iter().filter(|c| c.role == ColumnRole::Label).count();
+                            let counts = format!(
+                                "{features} {} · {labels} {}",
+                                if features == 1 { "feature" } else { "features" },
+                                if labels == 1 { "label" } else { "labels" },
+                            );
+                            drop(cols);
+                            rsx! {
+                                p {
+                                    class: "decompositions-section-title",
+                                    title: HELP_COLUMNS,
+                                    "aria-label": HELP_COLUMNS,
+                                    "Columns "
+                                    span { class: "decompositions-section-count", "{counts}" }
+                                }
+                            }
                         }
                         div { class: "decompositions-columns",
                             for (index, column) in columns.read().iter().enumerate() {
                                 div { class: "decompositions-column-row",
-                                    span {
-                                        class: "decompositions-column-name",
-                                        title: "{column.name}",
-                                        "{column.name}"
+                                    span { class: "decompositions-column-label",
+                                        match column.role {
+                                            ColumnRole::Feature => rsx! {
+                                                Icon { icon: FaHashtag, width: 11, height: 11, class: "decompositions-icon decompositions-column-roleicon", title: "Feature (fed into t-SNE)" }
+                                            },
+                                            ColumnRole::Label => rsx! {
+                                                Icon { icon: FaTag, width: 11, height: 11, class: "decompositions-icon decompositions-column-roleicon", title: "Label (color only)" }
+                                            },
+                                            ColumnRole::Ignore => rsx! {
+                                                Icon { icon: FaBan, width: 11, height: 11, class: "decompositions-icon decompositions-column-roleicon", title: "Ignored" }
+                                            },
+                                        }
+                                        span {
+                                            class: "decompositions-column-name",
+                                            title: "{column.name}",
+                                            "{column.name}"
+                                        }
                                     }
                                     select {
                                         title: HELP_COLUMNS,

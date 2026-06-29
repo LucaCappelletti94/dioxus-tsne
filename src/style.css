@@ -9,6 +9,9 @@
     --ddx-muted: rgba(10, 10, 10, 0.55);
     --ddx-line: rgba(10, 10, 10, 0.16);
     --ddx-panel: rgba(255, 255, 255, 0.92);
+    /* More translucent than --ddx-panel, for frosted-glass surfaces that let
+       the plot show through behind a backdrop blur. */
+    --ddx-glass: rgba(255, 255, 255, 0.55);
     --ddx-hover: rgba(10, 10, 10, 0.06);
 
     position: fixed;
@@ -26,6 +29,7 @@
         --ddx-muted: rgba(244, 244, 244, 0.6);
         --ddx-line: rgba(244, 244, 244, 0.2);
         --ddx-panel: rgba(18, 18, 18, 0.92);
+        --ddx-glass: rgba(22, 22, 22, 0.5);
         --ddx-hover: rgba(244, 244, 244, 0.08);
     }
 }
@@ -84,6 +88,15 @@
     font-weight: 600;
     letter-spacing: -0.01em;
     pointer-events: auto;
+}
+
+/* The logo links to the site root, so a click reloads to a clean slate. */
+.decompositions-brand-link {
+    display: inline-flex;
+    align-items: center;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
 }
 
 .decompositions-brand img {
@@ -158,31 +171,7 @@ a.decompositions-iconbtn {
     opacity: 1;
 }
 
-/* Thin progress bar pinned to the very top edge of the viewport. */
-.decompositions-progress {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    overflow: hidden;
-    z-index: 5;
-}
-
-.decompositions-progress-fill {
-    height: 100%;
-    width: 0;
-    background: var(--ddx-ink);
-    transition: width 0.2s ease;
-}
-
-.decompositions-progress-fill--indeterminate {
-    width: 30%;
-    position: absolute;
-    left: -30%;
-    animation: decompositions-indeterminate 1.1s ease-in-out infinite;
-}
-
+/* Indeterminate sweep, used by the transport scrubber. */
 @keyframes decompositions-indeterminate {
     0% {
         left: -30%;
@@ -199,15 +188,30 @@ a.decompositions-iconbtn {
     left: 50%;
     transform: translateX(-50%);
     display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.7rem;
-    background: var(--ddx-panel);
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.1rem;
+    padding: 0.35rem 0.7rem;
+    /* Frosted glass: translucent fill over a saturated backdrop blur so the
+       plot stays visible behind the bar instead of being boxed out. */
+    background: var(--ddx-glass);
     border: 1px solid var(--ddx-line);
-    border-radius: 999px;
-    backdrop-filter: blur(8px);
+    border-radius: 1.3rem;
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    box-shadow: 0 6px 24px rgba(10, 10, 10, 0.12);
     z-index: 4;
     max-width: calc(100vw - 2rem);
+}
+
+/* The commands sit on one row, the status line drops below them. Centered, so
+   they stay centered when the loading bar collapses (or the status line below
+   is wider than the buttons). */
+.decompositions-transport-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
 }
 
 .decompositions-transport .decompositions-iconbtn {
@@ -217,8 +221,29 @@ a.decompositions-iconbtn {
     height: 1.9rem;
 }
 
+/* No gray disc behind transport buttons; each just tints its icon on hover. */
 .decompositions-transport .decompositions-iconbtn:hover:not(:disabled) {
-    background: var(--ddx-hover);
+    background: transparent;
+}
+
+.decompositions-tp-play:hover:not(:disabled) {
+    color: #16a34a;
+}
+
+.decompositions-tp-restart:hover:not(:disabled) {
+    color: #2563eb;
+}
+
+.decompositions-tp-rec:hover:not(:disabled) {
+    color: #dc2626;
+}
+
+.decompositions-tp-snap:hover:not(:disabled) {
+    color: #9333ea;
+}
+
+.decompositions-tp-clear:hover:not(:disabled) {
+    color: #e5102d;
 }
 
 /* While recording, the REC control is unmistakably live: solid red and
@@ -236,14 +261,28 @@ a.decompositions-iconbtn {
     }
 }
 
+/* Loading bar. Collapses to nothing (and pulls its gap closed) when no run is
+   in flight, expands back when one starts. */
 .decompositions-scrubber {
     position: relative;
-    width: clamp(7rem, 20vw, 16rem);
+    width: 0;
+    opacity: 0;
+    margin-inline: -0.5rem;
     height: 3px;
     background: var(--ddx-line);
     border-radius: 2px;
     overflow: hidden;
     flex: none;
+    transition:
+        width 0.35s ease,
+        opacity 0.3s ease,
+        margin 0.35s ease;
+}
+
+.decompositions-scrubber--active {
+    width: clamp(7rem, 20vw, 16rem);
+    opacity: 1;
+    margin-inline: 0;
 }
 
 .decompositions-scrubber-fill {
@@ -261,14 +300,37 @@ a.decompositions-iconbtn {
     animation: decompositions-indeterminate 1.1s ease-in-out infinite;
 }
 
-.decompositions-status {
-    font-size: 0.78rem;
+/* Live status line below the commands: wraps, stays centered, never truncated. */
+.decompositions-statusline {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 0.1rem 0.6rem;
+    padding: 0.1rem 0.2rem;
+    font-size: 0.74rem;
     color: var(--ddx-muted);
     font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 16rem;
+    max-width: min(36rem, calc(100vw - 3rem));
+    animation: decompositions-fade-in 0.2s ease;
+}
+
+.decompositions-statusline--error {
+    color: #e5102d;
+}
+
+/* Each part explains itself on hover (a dotted underline hints at it). */
+.decompositions-statseg {
+    cursor: help;
+    border-bottom: 1px dotted transparent;
+    transition:
+        border-color 0.15s ease,
+        color 0.15s ease;
+}
+
+.decompositions-statseg:hover {
+    color: var(--ddx-ink);
+    border-bottom-color: var(--ddx-line);
 }
 
 .decompositions-select {
@@ -376,22 +438,27 @@ a.decompositions-iconbtn {
 }
 
 /* Legend overlay, lower-left, above the transport bar. Keeps data colors. */
+/* Vertical legend pinned to the left edge, centered. Wraps into a second
+   column when there are too many classes to fit the viewport height. */
 .decompositions-legend {
     position: absolute;
     left: 1rem;
-    bottom: 4.6rem;
-    max-width: calc(100% - 2rem);
+    top: 50%;
+    transform: translateY(-50%);
+    max-height: calc(100vh - 7rem);
     display: flex;
+    flex-direction: column;
     flex-wrap: wrap;
-    gap: 0.25rem 0.8rem;
-    padding: 0.5rem 0.7rem;
+    align-content: flex-start;
+    gap: 0.05rem 1rem;
+    padding: 0.5rem 0.6rem;
     font-size: 0.78rem;
     line-height: 1.2;
     color: var(--ddx-ink);
     background: var(--ddx-panel);
     border: 1px solid var(--ddx-line);
     border-radius: 8px;
-    pointer-events: none;
+    pointer-events: auto;
     z-index: 3;
 }
 
@@ -399,6 +466,31 @@ a.decompositions-iconbtn {
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 5px;
+    white-space: nowrap;
+}
+
+/* Only categorical legends are clickable: show it, and react to hover/pin. */
+.decompositions-legend--interactive .decompositions-legend-entry {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.12s ease;
+}
+
+.decompositions-legend--interactive .decompositions-legend-entry:hover {
+    background: var(--ddx-hover);
+}
+
+.decompositions-legend-entry--pinned,
+.decompositions-legend--interactive .decompositions-legend-entry--pinned:hover {
+    background: var(--ddx-hover);
+    font-weight: 600;
+}
+
+.decompositions-legend-more {
+    opacity: 0.6;
+    padding: 0.1rem 0.3rem;
 }
 
 .decompositions-legend-swatch {
@@ -439,6 +531,13 @@ a.decompositions-iconbtn {
     letter-spacing: 0.08em;
     color: var(--ddx-muted);
     margin: 0.3rem 0 0;
+}
+
+/* Feature/label tally beside the Columns heading, in plain (not upper) case. */
+.decompositions-section-count {
+    text-transform: none;
+    letter-spacing: 0;
+    opacity: 0.8;
 }
 
 .decompositions-field {
@@ -493,6 +592,20 @@ a.decompositions-iconbtn {
     justify-content: space-between;
     gap: 0.5rem;
     font-size: 0.8rem;
+}
+
+/* Left side of a column row: the role icon plus the (ellipsized) name. */
+.decompositions-column-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: 1;
+    min-width: 0;
+}
+
+.decompositions-column-roleicon {
+    flex: none;
+    opacity: 0.55;
 }
 
 .decompositions-column-name {
