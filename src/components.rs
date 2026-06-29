@@ -229,6 +229,7 @@ const HELP_COLOR_BY: &str =
 const HELP_SETTINGS: &str = "Advanced t-SNE settings.";
 const HELP_RECORD: &str = "Record the scatter plot animation as a WebM video. Toggle while a run is active to capture the embedding evolving.";
 const HELP_CLEAR: &str = "Clear the dataset and result, returning to the start.";
+const HELP_LEGEND_EXPORT: &str = "Bake the color legend into the downloaded snapshot. It gets its own strip and the points are framed beside it, so the legend never covers them.";
 
 // Status-line tooltips: short explanations so a newcomer can learn the terms by
 // hovering them while the fit runs.
@@ -682,6 +683,8 @@ fn DecompositionView(config: Decomposition) -> Element {
     // Run without a fixed epoch budget: the fit keeps iterating until the user
     // pauses it. Implemented as a huge epoch count the run never reaches.
     let mut infinite = use_signal(|| false);
+    // Bake the color legend into the downloaded snapshot (a reserved strip).
+    let mut legend_in_export = use_signal(|| false);
     let mut learning_rate = use_signal(|| defaults.learning_rate);
     let mut early_exaggeration = use_signal(|| defaults.early_exaggeration);
     let mut exaggeration_epochs = use_signal(|| defaults.early_exaggeration_epochs);
@@ -1273,6 +1276,11 @@ fn DecompositionView(config: Decomposition) -> Element {
         let colors = colors.read();
         let markers = markers.read();
         let highlight = highlight.read();
+        // Bake the legend into the picture only when asked and there is one.
+        let legend = legend_in_export()
+            .then(|| coloring_result.read().as_ref().map(|c| c.legend.clone()))
+            .flatten()
+            .filter(|entries| !entries.is_empty());
         let (vw, vh) = viewport();
         let size = vw.min(vh).max(1);
         let Some(data_url) = crate::plot::snapshot_png(
@@ -1280,6 +1288,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             colors.as_deref(),
             markers.as_deref(),
             highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
+            legend.as_deref(),
             size,
         ) else {
             return;
@@ -2034,6 +2043,18 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 for column in effective_labels.read().iter() {
                                     option { value: "column:{column.name}", "{column.name}" }
                                 }
+                            }
+                        }
+                        label { class: "decompositions-field", r#for: "legend-export", title: HELP_LEGEND_EXPORT, "aria-label": HELP_LEGEND_EXPORT,
+                            span { class: "decompositions-field-label",
+                                Icon { icon: FaImage, width: 14, height: 14, class: "decompositions-icon" }
+                                "Legend in snapshot"
+                            }
+                            input {
+                                id: "legend-export",
+                                r#type: "checkbox",
+                                checked: legend_in_export(),
+                                onchange: move |evt| legend_in_export.set(evt.checked()),
                             }
                         }
                     }

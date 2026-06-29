@@ -28,6 +28,10 @@ html, body {
     margin: 0;
     height: 100%;
     font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+    html, body { background: #0a0a0a; }
 }
 ";
 

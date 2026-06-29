@@ -3,6 +3,7 @@
    .decompositions-explorer. Data point colors come from the palette, only the
    chrome is monochrome. */
 
+/* Light by default, dark dispatched off the OS preference below. */
 .decompositions-explorer {
     --ddx-bg: #ffffff;
     --ddx-ink: #0a0a0a;

@@ -9,10 +9,18 @@ use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-use crate::color::Marker;
+use crate::color::{LegendEntry, Marker};
 
 /// Viewport margin, in canvas pixels, kept clear around the embedding.
 const MARGIN: f32 = 12.0;
+
+/// Baked-in legend (snapshot export) layout, in logical pixels.
+const LEGEND_FONT: &str = "13px system-ui, -apple-system, 'Segoe UI', sans-serif";
+const LEGEND_ROW_H: f32 = 20.0;
+const LEGEND_PAD: f32 = 14.0;
+/// Width of the marker plus the gap before its label.
+const LEGEND_MARKER_COL: f32 = 18.0;
+const LEGEND_MIN_WIDTH: f32 = 90.0;
 
 /// The data-space to canvas-pixel mapping of one draw.
 ///
@@ -147,8 +155,24 @@ const DIMMED_COLOR: &str = "#d8d8d8";
 const FILL_ALPHA: f64 = 0.82;
 
 /// Opaque canvas background, so a recorded video has a solid backdrop rather
-/// than a transparent one (which video codecs render as black).
-const PLOT_BACKGROUND: &str = "#ffffff";
+/// than a transparent one (which video codecs render as black). Picked at draw
+/// time to match the page theme: a white plot under a dark UI was the old
+/// dark-mode "white on white" bug.
+const PLOT_BACKGROUND_LIGHT: &str = "#ffffff";
+const PLOT_BACKGROUND_DARK: &str = "#0a0a0a";
+
+/// Whether the page prefers a dark color scheme, so canvas drawing (which CSS
+/// variables cannot reach) can match the theme.
+fn prefers_dark() -> bool {
+    web_sys::window()
+        .and_then(|window| {
+            window
+                .match_media("(prefers-color-scheme: dark)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|query| query.matches())
+}
 
 /// Multiple of the median distance from the center of mass beyond which a point
 /// is left out of the viewport fit (see [`Transform::fit`]). Large enough that a
@@ -210,6 +234,7 @@ fn draw(
     ratio: f64,
     transform_override: Option<Transform>,
     opaque_background: bool,
+    legend: Option<&[LegendEntry]>,
 ) -> Option<Transform> {
     let context = canvas
         .get_context("2d")
@@ -228,15 +253,30 @@ fn draw(
     // animation is captured to a video, see the recording feature. The PNG
     // snapshot wants a transparent background instead, so it opts out.
     if opaque_background {
-        context.set_fill_style_str(PLOT_BACKGROUND);
+        let background = if prefers_dark() {
+            PLOT_BACKGROUND_DARK
+        } else {
+            PLOT_BACKGROUND_LIGHT
+        };
+        context.set_fill_style_str(background);
         context.fill_rect(0.0, 0.0, f64::from(width), f64::from(height));
     }
 
+    // Reserve a left strip for a baked-in legend (the snapshot export), and fit
+    // the points into the area to its right so they never overlap it.
+    let legend = legend.filter(|entries| !entries.is_empty());
+    let strip_w = legend.map_or(0.0, |entries| {
+        legend_strip_width(&context, entries, width as f32)
+    });
+
     let transform = transform_override
-        .or_else(|| Transform::fit(points, width as f32, height as f32, MARGIN))?;
+        .or_else(|| Transform::fit(points, width as f32 - strip_w, height as f32, MARGIN))?;
     let pixels: Vec<(f32, f32)> = points
         .chunks_exact(2)
-        .map(|point| transform.project(point[0], point[1]))
+        .map(|point| {
+            let (x, y) = transform.project(point[0], point[1]);
+            (x + strip_w, y)
+        })
         .collect();
     let n = pixels.len();
     if n == 0 {
@@ -306,7 +346,89 @@ fn draw(
         }
     }
 
+    if let Some(entries) = legend {
+        draw_legend(&context, entries, strip_w, height as f32);
+    }
+
     Some(transform)
+}
+
+/// Width of the reserved legend strip: the longest label plus the marker column
+/// and padding, clamped so it never eats more than 40% of the canvas.
+fn legend_strip_width(
+    context: &CanvasRenderingContext2d,
+    entries: &[LegendEntry],
+    canvas_width: f32,
+) -> f32 {
+    context.set_font(LEGEND_FONT);
+    let max_label = entries
+        .iter()
+        .map(|entry| {
+            context
+                .measure_text(&entry.label)
+                .map(|metrics| metrics.width() as f32)
+                .unwrap_or(0.0)
+        })
+        .fold(0.0f32, f32::max);
+    (LEGEND_PAD * 2.0 + LEGEND_MARKER_COL + max_label).clamp(LEGEND_MIN_WIDTH, canvas_width * 0.4)
+}
+
+/// Draws the legend down the reserved left strip: a colored marker and its label
+/// per class, vertically centered, with a "+N more" row when the classes do not
+/// all fit the height.
+fn draw_legend(
+    context: &CanvasRenderingContext2d,
+    entries: &[LegendEntry],
+    strip_w: f32,
+    height: f32,
+) {
+    // Match the page theme so the labels read on the export's own background.
+    let dark = prefers_dark();
+    let text_color = if dark { "#f4f4f4" } else { "#1a1a1a" };
+
+    context.set_font(LEGEND_FONT);
+    context.set_text_baseline("middle");
+
+    let usable = (height - 2.0 * LEGEND_PAD).max(LEGEND_ROW_H);
+    let max_rows = (usable / LEGEND_ROW_H).floor().max(1.0) as usize;
+    let (shown, overflow) = if entries.len() > max_rows {
+        (max_rows - 1, entries.len() - (max_rows - 1))
+    } else {
+        (entries.len(), 0)
+    };
+    let rows = shown + usize::from(overflow > 0);
+    let mut y = (height - rows as f32 * LEGEND_ROW_H) / 2.0 + LEGEND_ROW_H / 2.0;
+    let marker_x = f64::from(LEGEND_PAD + LEGEND_MARKER_COL / 2.0);
+    let label_x = f64::from(LEGEND_PAD + LEGEND_MARKER_COL);
+
+    for entry in entries.iter().take(shown) {
+        context.set_fill_style_str(&entry.color);
+        context.set_stroke_style_str(&entry.color);
+        context.set_line_width(1.0);
+        context.begin_path();
+        add_marker_to_path(context, entry.marker, marker_x, f64::from(y), 5.0);
+        context.set_global_alpha(FILL_ALPHA);
+        context.fill();
+        context.set_global_alpha(1.0);
+        context.stroke();
+
+        context.set_fill_style_str(text_color);
+        let _ = context.fill_text(&entry.label, label_x, f64::from(y));
+        y += LEGEND_ROW_H;
+    }
+    if overflow > 0 {
+        context.set_fill_style_str(text_color);
+        let _ = context.fill_text(&format!("+{overflow} more"), label_x, f64::from(y));
+    }
+    context.set_text_baseline("alphabetic");
+
+    // Faint separator between the legend strip and the plot.
+    context.set_stroke_style_str(if dark { "#3a3a3a" } else { "#dddddd" });
+    context.set_line_width(1.0);
+    context.begin_path();
+    context.move_to(f64::from(strip_w), f64::from(LEGEND_PAD));
+    context.line_to(f64::from(strip_w), f64::from(height - LEGEND_PAD));
+    context.stroke();
 }
 
 /// Renders the current embedding to an offscreen square canvas with a
@@ -323,6 +445,7 @@ pub(crate) fn snapshot_png(
     colors: Option<&[String]>,
     markers: Option<&[Marker]>,
     highlight: Option<(&str, Marker)>,
+    legend: Option<&[LegendEntry]>,
     size: u32,
 ) -> Option<String> {
     let document = web_sys::window()?.document()?;
@@ -338,7 +461,7 @@ pub(crate) fn snapshot_png(
     canvas.set_width((f64::from(size) * ratio).round() as u32);
     canvas.set_height((f64::from(size) * ratio).round() as u32);
     draw(
-        &canvas, points, colors, markers, highlight, size, size, ratio, None, false,
+        &canvas, points, colors, markers, highlight, size, size, ratio, None, false, legend,
     )?;
     canvas.to_data_url_with_type("image/png").ok()
 }
@@ -461,6 +584,7 @@ pub fn ScatterPlot(
                 ratio,
                 override_transform,
                 true,
+                None,
             ),
             None => {
                 if let Some(context) = canvas
