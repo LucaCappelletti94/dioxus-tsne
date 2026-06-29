@@ -29,8 +29,11 @@ const WORKER_STEM: &str = "decompositions_worker";
 
 /// RUSTFLAGS for the threaded worker build: atomics plus the linker exports
 /// wasm-bindgen-rayon needs to share memory across the pool workers. Mirrors the
-/// flags documented by wasm-bindgen-rayon.
-const THREAD_RUSTFLAGS: &str = "-C target-feature=+atomics,+bulk-memory \
+/// flags documented by wasm-bindgen-rayon. `simd128` vectorizes the numeric hot
+/// paths (and unlocks rustfft's wasm SIMD backend, behind its `wasm_simd`
+/// feature); every browser that supports the SharedArrayBuffer threading this
+/// build needs also supports wasm SIMD.
+const THREAD_RUSTFLAGS: &str = "-C target-feature=+atomics,+bulk-memory,+simd128 \
 -C link-arg=--shared-memory \
 -C link-arg=--max-memory=1073741824 \
 -C link-arg=--import-memory \

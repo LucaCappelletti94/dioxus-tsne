@@ -249,17 +249,6 @@ fn excessive_perplexity_is_rejected() {
 }
 
 #[test]
-fn non_positive_theta_is_rejected() {
-    let data = clustered_data(100, 4);
-    let params = TsneParams {
-        theta: 0.0,
-        ..TsneParams::default()
-    };
-    let result = decompose(&data, 200, 4, &DecompositionMethod::Tsne(params), |_, _| {});
-    assert!(result.unwrap_err().contains("theta"));
-}
-
-#[test]
 fn inconsistent_shape_is_rejected() {
     let result = decompose(
         &[1.0, 2.0, 3.0],

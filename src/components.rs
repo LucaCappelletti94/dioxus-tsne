@@ -19,10 +19,10 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBan, FaBullseye, FaCalculator, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload,
-    FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaInfinity,
-    FaPalette, FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders,
-    FaSpinner, FaTag, FaTrashCan, FaTriangleExclamation, FaVideo, FaXmark,
+    FaBan, FaCalculator, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload, FaExpand,
+    FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaInfinity, FaPalette,
+    FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTag,
+    FaTrashCan, FaTriangleExclamation, FaVideo, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -214,7 +214,6 @@ fn auto_learning_rate(n_samples: usize) -> f32 {
 // readers (`aria-label`), so a newcomer can learn what each control does just by
 // hovering it.
 const HELP_PERPLEXITY: &str = "Roughly how many close neighbors each point pays attention to. Smaller makes tight local clumps, larger spreads things out. 5 to 50 is typical.";
-const HELP_THETA: &str = "Trades t-SNE speed against accuracy. Lower is more accurate but slower, higher is faster but rougher. 0.5 is a sensible default.";
 const HELP_EPOCHS: &str = "How many refinement steps to run. More steps polish the layout further but take longer. 1000 is a good default, a few hundred is often enough.";
 const HELP_INFINITE: &str = "Keep iterating with no fixed limit until you press pause, so you can watch the layout evolve indefinitely. The epoch count above is ignored.";
 const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
@@ -678,7 +677,6 @@ fn DecompositionView(config: Decomposition) -> Element {
     let defaults = TsneParams::default();
     let mut pca_dims = use_signal(|| defaults.pca_dims);
     let mut perplexity = use_signal(|| defaults.perplexity);
-    let mut theta = use_signal(|| defaults.theta);
     let mut epochs = use_signal(|| defaults.epochs);
     // Run without a fixed epoch budget: the fit keeps iterating until the user
     // pauses it. Implemented as a huge epoch count the run never reaches.
@@ -720,7 +718,6 @@ fn DecompositionView(config: Decomposition) -> Element {
     let build_method = move || -> DecompositionMethod {
         DecompositionMethod::Tsne(TsneParams {
             perplexity: perplexity(),
-            theta: theta(),
             epochs: if infinite() {
                 INFINITE_EPOCHS
             } else {
@@ -1003,7 +1000,6 @@ fn DecompositionView(config: Decomposition) -> Element {
             };
             let selected = DecompositionMethod::Tsne(TsneParams {
                 perplexity: perplexity(),
-                theta: theta(),
                 epochs: if infinite() {
                     INFINITE_EPOCHS
                 } else {
@@ -1492,6 +1488,9 @@ fn DecompositionView(config: Decomposition) -> Element {
             if let Some(active) = coloring_result.read().as_ref() {
                 {
                     let interactive = active.scale == ColorScale::Categorical;
+                    // Above the marker limit the plot draws dots, not shapes, so
+                    // the legend shows a uniform dot to match.
+                    let uniform_marker = active.colors.len() > crate::plot::SHAPED_MARKER_LIMIT;
                     rsx! {
                         div {
                             id: "legend",
@@ -1527,7 +1526,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     span {
                                         class: "decompositions-legend-swatch",
                                         style: "color: {entry.color};",
-                                        "{entry.marker.glyph()}"
+                                        { (if uniform_marker { Marker::Circle } else { entry.marker }).glyph().to_string() }
                                     }
                                     "{entry.label}"
                                 }
@@ -1594,17 +1593,6 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 Icon { icon: FaHeart, width: 16, height: 16, class: "decompositions-icon" }
                             }
                         }
-                        button {
-                            id: "settings",
-                            class: "decompositions-iconbtn",
-                            title: HELP_SETTINGS,
-                            "aria-label": HELP_SETTINGS,
-                            onclick: move |_| {
-                                let mut settings_open = settings_open;
-                                settings_open.set(!settings_open());
-                            },
-                            Icon { icon: FaSliders, width: 16, height: 16, class: "decompositions-icon" }
-                        }
                     }
                 }
             }
@@ -1647,7 +1635,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                                         Err(error) => Err(error),
                                                     };
                                                     match fetched {
-                                                        Ok(bytes) => load(url, bytes, Some(build_method())),
+                                                        Ok(bytes) => load(url, bytes, None),
                                                         Err(error) => {
                                                             let mut status = status;
                                                             let mut ingest_error = ingest_error;
@@ -1715,9 +1703,12 @@ fn DecompositionView(config: Decomposition) -> Element {
                 }
             }
 
-            // Bottom-center media-player transport bar.
+            // Media-player transport bar. Centered as a call to action once a
+            // dataset is loaded but not yet run, then animates down to the
+            // bottom when the run (and any recording) starts.
             if controls && dataset.read().is_some() {
-                div { class: "decompositions-transport",
+                div {
+                    class: if embedding.read().is_none() && !busy() { "decompositions-transport decompositions-transport--centered" } else { "decompositions-transport" },
                     div { class: "decompositions-transport-row",
                         // Play/Pause: hidden while a recording run is in flight,
                         // when the rec/stop button is the only control.
@@ -1735,8 +1726,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 }
                             }
                         }
-                        // Restart (run from scratch) only makes sense while stopped.
-                        if !busy() {
+                        // Restart (run from scratch): only once a run has
+                        // happened at least once and is now stopped.
+                        if !busy() && embedding.read().is_some() {
                             button {
                                 id: "restart",
                                 class: "decompositions-iconbtn decompositions-tp-restart",
@@ -1788,6 +1780,21 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 "aria-label": "Download the recorded video",
                                 onclick: download_video,
                                 Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                            }
+                        }
+                        // Settings only matter between runs (params are captured
+                        // when a run starts), so the gear is hidden while busy.
+                        if !busy() {
+                            button {
+                                id: "settings",
+                                class: "decompositions-iconbtn decompositions-tp-settings",
+                                title: HELP_SETTINGS,
+                                "aria-label": HELP_SETTINGS,
+                                onclick: move |_| {
+                                    let mut settings_open = settings_open;
+                                    settings_open.set(!settings_open());
+                                },
+                                Icon { icon: FaSliders, width: 14, height: 14, class: "decompositions-icon" }
                             }
                         }
                         button {
@@ -1886,25 +1893,6 @@ fn DecompositionView(config: Decomposition) -> Element {
                             onchange: move |evt| {
                                 if let Ok(value) = evt.value().parse::<f32>() {
                                     perplexity.set(value.max(1.0));
-                                }
-                            },
-                        }
-                    }
-                    label { class: "decompositions-field", r#for: "theta", title: HELP_THETA, "aria-label": HELP_THETA,
-                        span { class: "decompositions-field-label",
-                            Icon { icon: FaBullseye, width: 14, height: 14, class: "decompositions-icon" }
-                            "Theta"
-                        }
-                        input {
-                            id: "theta",
-                            r#type: "number",
-                            min: "0.1",
-                            max: "1",
-                            step: "0.1",
-                            value: "{theta}",
-                            onchange: move |evt| {
-                                if let Ok(value) = evt.value().parse::<f32>() {
-                                    theta.set(value.clamp(0.1, 1.0));
                                 }
                             },
                         }
@@ -2250,8 +2238,8 @@ fn DecompositionView(config: Decomposition) -> Element {
                         }
                         p {
                             "The settings panel exposes the knobs that drive all of this: "
-                            "perplexity, the Barnes-Hut accuracy (theta), epochs, learning rate, "
-                            "PCA dimensions, and the early-exaggeration phase."
+                            "perplexity, epochs, learning rate, PCA dimensions, and the "
+                            "early-exaggeration phase."
                         }
 
                         h3 { "Built in Rust" }

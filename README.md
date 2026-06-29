@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Live demo](https://img.shields.io/badge/demo-tsne.luca.phd-blue)](https://tsne.luca.phd)
 
-Barnes-Hut t-SNE in the browser, in Rust + WebAssembly. Drop a CSV, TSV or Parquet file (or pick an example) and watch the embedding form. The fit runs off the main thread on a `SharedArrayBuffer` Rayon pool, with PCA initialization for stable global structure.
+Barnes-Hut t-SNE in the browser, in Rust + WebAssembly. Drop a CSV, TSV, Parquet, Arrow or NumPy (`.npy`) file (or pick an example) and watch the embedding form. The fit runs off the main thread on a `SharedArrayBuffer` Rayon pool, with PCA initialization for stable global structure.
 
 ## References
 

@@ -48,6 +48,10 @@ js-sys = "0.3"
 # Already pulled in transitively by bhtsne, declared directly so the worker can
 # report rayon's global pool size (the active thread count) back to the UI.
 rayon = "1"
+# Pulled in transitively by bhtsne (via realfft) for FIt-SNE's FFT. Declared
+# directly only to flip on its `wasm_simd` feature, which gives a vectorized
+# wasm32 FFT when the worker is built with the `simd128` target feature.
+rustfft = { version = "6", features = ["wasm_simd"] }
 nalgebra = "0.35.0"
 # Parquet ingestion through the Arrow reader. Snappy is the only compression
 # enabled: it is the Parquet default, and the gzip backend (flate2) does not

@@ -35,8 +35,6 @@ pub struct TsneParams {
     /// Perplexity of the conditional distribution, requires
     /// `n_samples - 1 >= 3 * perplexity`.
     pub perplexity: f32,
-    /// Barnes-Hut accuracy trade off, strictly positive, lower is more exact.
-    pub theta: f32,
     /// Number of fitting epochs.
     pub epochs: usize,
     /// Gradient descent learning rate, or `None` to let bhtsne pick the
@@ -82,7 +80,6 @@ impl Default for TsneParams {
     fn default() -> Self {
         Self {
             perplexity: 30.0,
-            theta: 0.5,
             epochs: 1000,
             learning_rate: None,
             pca_dims: 30,

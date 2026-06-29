@@ -193,16 +193,23 @@ a.decompositions-iconbtn {
     align-items: stretch;
     gap: 0.1rem;
     padding: 0.35rem 0.7rem;
-    /* Frosted glass: translucent fill over a saturated backdrop blur so the
-       plot stays visible behind the bar instead of being boxed out. */
-    background: var(--ddx-glass);
+    /* Solid-ish panel. A backdrop blur was nicer to look at but re-blurred the
+       animating plot behind it every frame, a fixed per-frame cost, so it is
+       dropped in favor of a near-opaque fill. */
+    background: var(--ddx-panel);
     border: 1px solid var(--ddx-line);
     border-radius: 1.3rem;
-    backdrop-filter: blur(18px) saturate(180%);
-    -webkit-backdrop-filter: blur(18px) saturate(180%);
     box-shadow: 0 6px 24px rgba(10, 10, 10, 0.12);
     z-index: 4;
     max-width: calc(100vw - 2rem);
+    animation: decompositions-fade-in 0.3s ease;
+    transition: transform 0.55s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Before the first run the bar floats at the page center as the call to action,
+   then slides down to the bottom once the run (and any recording) starts. */
+.decompositions-transport--centered {
+    transform: translateX(-50%) translateY(calc(-50vh + 2.4rem));
 }
 
 /* The commands sit on one row, the status line drops below them. Centered, so
@@ -245,6 +252,11 @@ a.decompositions-iconbtn {
 
 .decompositions-tp-clear:hover:not(:disabled) {
     color: #e5102d;
+}
+
+/* The settings gear has no accent color, just a subtle dim on hover. */
+.decompositions-tp-settings:hover:not(:disabled) {
+    opacity: 0.6;
 }
 
 /* While recording, the REC control is unmistakably live: solid red and
@@ -461,6 +473,7 @@ a.decompositions-iconbtn {
     border-radius: 8px;
     pointer-events: auto;
     z-index: 3;
+    animation: decompositions-fade-in 0.3s ease;
 }
 
 .decompositions-legend-entry {

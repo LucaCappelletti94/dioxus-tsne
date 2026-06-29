@@ -14,6 +14,12 @@ use crate::color::{LegendEntry, Marker};
 /// Viewport margin, in canvas pixels, kept clear around the embedding.
 const MARGIN: f32 = 12.0;
 
+/// Above this many points the plot draws fast colored dots instead of per-class
+/// marker shapes (the shapes overlap into illegibility anyway). The legend keys
+/// off the same limit so it shows uniform dots rather than implying shapes that
+/// are not actually drawn.
+pub(crate) const SHAPED_MARKER_LIMIT: usize = 20_000;
+
 /// Baked-in legend (snapshot export) layout, in logical pixels.
 const LEGEND_FONT: &str = "13px system-ui, -apple-system, 'Segoe UI', sans-serif";
 const LEGEND_ROW_H: f32 = 20.0;
@@ -162,16 +168,28 @@ const PLOT_BACKGROUND_LIGHT: &str = "#ffffff";
 const PLOT_BACKGROUND_DARK: &str = "#0a0a0a";
 
 /// Whether the page prefers a dark color scheme, so canvas drawing (which CSS
-/// variables cannot reach) can match the theme.
+/// variables cannot reach) can match the theme. Cached: `draw` runs every frame
+/// and `matchMedia` is a needless DOM query to repeat at the frame rate. A theme
+/// switch mid-session is reflected on the next reload.
 fn prefers_dark() -> bool {
-    web_sys::window()
-        .and_then(|window| {
-            window
-                .match_media("(prefers-color-scheme: dark)")
-                .ok()
-                .flatten()
-        })
-        .is_some_and(|query| query.matches())
+    thread_local! {
+        static CACHED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+    CACHED.with(|cached| {
+        if let Some(value) = cached.get() {
+            return value;
+        }
+        let value = web_sys::window()
+            .and_then(|window| {
+                window
+                    .match_media("(prefers-color-scheme: dark)")
+                    .ok()
+                    .flatten()
+            })
+            .is_some_and(|query| query.matches());
+        cached.set(Some(value));
+        value
+    })
 }
 
 /// Multiple of the median distance from the center of mass beyond which a point
@@ -319,7 +337,7 @@ fn draw(
     context.set_line_width(1.0);
     for (color, marker, indices) in batches {
         context.set_fill_style_str(color);
-        if n > 20_000 {
+        if n > SHAPED_MARKER_LIMIT {
             // Above this many points the per-point shapes are illegible anyway
             // (they overlap), so draw fast colored dots. This keeps huge
             // embeddings (and their snapshots and drags) fluid, since a path per
@@ -347,7 +365,13 @@ fn draw(
     }
 
     if let Some(entries) = legend {
-        draw_legend(&context, entries, strip_w, height as f32);
+        draw_legend(
+            &context,
+            entries,
+            strip_w,
+            height as f32,
+            n > SHAPED_MARKER_LIMIT,
+        );
     }
 
     Some(transform)
@@ -381,6 +405,7 @@ fn draw_legend(
     entries: &[LegendEntry],
     strip_w: f32,
     height: f32,
+    uniform_marker: bool,
 ) {
     // Match the page theme so the labels read on the export's own background.
     let dark = prefers_dark();
@@ -402,11 +427,17 @@ fn draw_legend(
     let label_x = f64::from(LEGEND_PAD + LEGEND_MARKER_COL);
 
     for entry in entries.iter().take(shown) {
+        // Match the plot: above the limit it draws dots, not shapes.
+        let marker = if uniform_marker {
+            Marker::Circle
+        } else {
+            entry.marker
+        };
         context.set_fill_style_str(&entry.color);
         context.set_stroke_style_str(&entry.color);
         context.set_line_width(1.0);
         context.begin_path();
-        add_marker_to_path(context, entry.marker, marker_x, f64::from(y), 5.0);
+        add_marker_to_path(context, marker, marker_x, f64::from(y), 5.0);
         context.set_global_alpha(FILL_ALPHA);
         context.fill();
         context.set_global_alpha(1.0);

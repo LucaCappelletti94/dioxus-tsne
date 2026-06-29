@@ -14,8 +14,8 @@ pub struct DecomposeOutput {
 }
 
 /// Identifies the affinity graph of a t-SNE run. The `P` distribution depends
-/// only on the reduced input and the perplexity, so theta, the epochs, the
-/// learning rate and the warm-start seed are excluded. The worker holds a
+/// only on the reduced input and the perplexity, so the epochs, the learning
+/// rate and the warm-start seed are excluded. The worker holds a
 /// single dataset per instance (a new dataset respawns it), so these fields
 /// distinguish only the cases that can occur within one instance: a perplexity
 /// or `pca_dims` change between a run and a continuation.
@@ -116,9 +116,6 @@ fn tsne<C>(
 where
     C: FnMut(usize, &[f32]) + Send + Sync,
 {
-    if params.theta <= 0.0 {
-        return Err(String::from("theta must be strictly positive"));
-    }
     // Mirrors the bhtsne perplexity check, which would otherwise panic.
     if (n_samples as f32 - 1.0) < 3.0 * params.perplexity {
         return Err(format!(
@@ -205,9 +202,13 @@ where
         fit.with_affinities(affinities);
     }
 
-    // A reused affinity graph short-circuits the neighbor search inside bhtsne,
-    // so this only rebuilds the vantage point tree when the graph is not cached.
-    fit.barnes_hut(params.theta, |a, b| {
+    // Barnes-Hut approximation for the repulsive forces. (FIt-SNE was tried but
+    // its fixed-cost interpolation grid made every epoch slow in the browser,
+    // regardless of dataset size.) Theta is hardcoded for now; the setting may
+    // come back. A reused affinity graph short-circuits the neighbor search, so
+    // this only rebuilds the vantage point tree when the graph is not cached.
+    const BARNES_HUT_THETA: f32 = 0.5;
+    fit.barnes_hut(BARNES_HUT_THETA, |a, b| {
         a.iter()
             .zip(b.iter())
             .map(|(x, y)| (x - y).powi(2))
