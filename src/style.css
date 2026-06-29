@@ -172,6 +172,27 @@ a.decompositions-iconbtn {
     opacity: 1;
 }
 
+/* When a run finishes, the heart gives a few gentle red pulses to draw the eye,
+   after a short pause so it does not fire the instant the layout settles. The
+   scale uses transform so neighbors do not reflow, and it runs a finite number
+   of times so it stays a nudge, not a nag. */
+.decompositions-topbar .decompositions-heart-attention {
+    animation: decompositions-heart-pulse 1s ease-in-out 2.2s 3;
+    transform-origin: center;
+}
+
+@keyframes decompositions-heart-pulse {
+    0%,
+    100% {
+        color: var(--ddx-ink);
+        transform: scale(1);
+    }
+    50% {
+        color: #e5102d;
+        transform: scale(1.28);
+    }
+}
+
 /* Indeterminate sweep, used by the transport scrubber. */
 @keyframes decompositions-indeterminate {
     0% {

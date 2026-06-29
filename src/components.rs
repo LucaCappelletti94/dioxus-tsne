@@ -1584,7 +1584,14 @@ fn DecompositionView(config: Decomposition) -> Element {
                         if let Some(support_url) = support_url.as_ref() {
                             a {
                                 id: "support",
-                                class: "decompositions-iconbtn decompositions-heartbtn",
+                                // After a run finishes, a few elegant red pulses
+                                // nudge the user toward the sponsor link. The
+                                // pause and pulse count are pure CSS.
+                                class: if matches!(*run_info.read(), Some(RunInfo::Done { .. })) {
+                                    "decompositions-iconbtn decompositions-heartbtn decompositions-heart-attention"
+                                } else {
+                                    "decompositions-iconbtn decompositions-heartbtn"
+                                },
                                 href: "{support_url}",
                                 target: "_blank",
                                 rel: "noopener",
