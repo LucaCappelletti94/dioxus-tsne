@@ -45,6 +45,8 @@ pub enum IngestError {
     Arrow(arrow_schema::ArrowError),
     /// Malformed or unsupported NumPy `.npy` content.
     Npy(String),
+    /// Malformed or unreadable spreadsheet (`.xlsx`, `.ods`, `.xls`, `.xlsb`).
+    Spreadsheet(String),
     /// A numeric Arrow column (Parquet or IPC) contains nulls.
     MissingValues {
         /// Name of the offending column.
@@ -71,6 +73,7 @@ impl fmt::Display for IngestError {
             IngestError::Parquet(e) => write!(f, "malformed Parquet: {e}"),
             IngestError::Arrow(e) => write!(f, "malformed Arrow IPC/Feather: {e}"),
             IngestError::Npy(e) => write!(f, "malformed NumPy .npy: {e}"),
+            IngestError::Spreadsheet(e) => write!(f, "malformed spreadsheet: {e}"),
             IngestError::MissingValues { column } => {
                 write!(f, "numeric column {column:?} contains missing values")
             }
@@ -107,28 +110,44 @@ enum Column {
     Text(Vec<String>),
 }
 
-/// Parses a user supplied file into a [`Dataset`].
-///
-/// The format is detected from the content (magic numbers) with the file name
-/// extension as a fallback: Parquet (`PAR1`), Arrow IPC / Feather (`ARROW1`),
-/// and NumPy `.npy` (`\x93NUMPY`) are recognized, everything else is treated as
-/// delimited text (CSV/TSV told apart by sniffing the first line's delimiter).
-/// A header row is detected by comparing the parseability of the first row
-/// against the rest. Columns where every value parses as a float become matrix
-/// features, every other column is set aside as a candidate label column for
-/// coloring. A `.npy` holds a single array, so it yields a feature-only matrix
-/// with no labels.
-///
-/// # Arguments
-///
-/// * `file_name` - name of the file, used as a format hint.
-/// * `bytes` - raw content of the file.
+/// A parsed file: the [`Dataset`] plus, for spreadsheets, the worksheet names
+/// (for a sheet picker) and the index of the one parsed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedFile {
+    /// The parsed dataset (matrix and label columns).
+    pub dataset: Dataset,
+    /// Worksheet names in file order, empty for non-spreadsheet formats.
+    pub sheets: Vec<String>,
+    /// Index into `sheets` of the worksheet `dataset` came from, 0 otherwise.
+    pub sheet: usize,
+}
+
+/// Parses a user supplied file into a [`Dataset`], reading the first worksheet
+/// of a spreadsheet. See [`parse_file`] for the format detection rules.
 ///
 /// # Errors
 ///
 /// Returns an [`IngestError`] when the content is malformed, empty or contains
 /// no numeric column.
 pub fn parse_dataset(file_name: &str, bytes: &[u8]) -> Result<Dataset, IngestError> {
+    parse_file(file_name, bytes, 0).map(|parsed| parsed.dataset)
+}
+
+/// Parses a user supplied file into a [`ParsedFile`].
+///
+/// The format is detected by magic number, falling back to the extension:
+/// Parquet (`PAR1`), Arrow IPC / Feather (`ARROW1`) and NumPy `.npy`
+/// (`\x93NUMPY`) by magic, spreadsheets (`.xlsx`, `.ods`, `.xls`, `.xlsb`) by
+/// extension only (they share a generic container magic), everything else as
+/// delimited text. Fully-numeric columns become features, the rest label
+/// columns for coloring. For a spreadsheet, `sheet` selects the worksheet
+/// (clamped into range), ignored for every other format.
+///
+/// # Errors
+///
+/// Returns an [`IngestError`] when the content is malformed, empty or contains
+/// no numeric column.
+pub fn parse_file(file_name: &str, bytes: &[u8], sheet: usize) -> Result<ParsedFile, IngestError> {
     const PARQUET_MAGIC: &[u8] = b"PAR1";
     const ARROW_MAGIC: &[u8] = b"ARROW1";
     const NPY_MAGIC: &[u8] = b"\x93NUMPY";
@@ -136,17 +155,32 @@ pub fn parse_dataset(file_name: &str, bytes: &[u8]) -> Result<Dataset, IngestErr
     let extension = file_name.rsplit('.').next().map(str::to_ascii_lowercase);
     let extension = extension.as_deref();
 
-    if bytes.starts_with(NPY_MAGIC) || extension == Some("npy") {
-        return parse_npy(bytes);
-    }
-    if bytes.starts_with(PARQUET_MAGIC) || extension == Some("parquet") {
-        return parse_parquet(bytes);
-    }
-    if bytes.starts_with(ARROW_MAGIC) || matches!(extension, Some("arrow" | "feather" | "ipc")) {
-        return parse_arrow_ipc(bytes);
+    if matches!(extension, Some("xlsx" | "ods" | "xls" | "xlsb")) {
+        let (dataset, sheets, active) = parse_spreadsheet(bytes, sheet)?;
+        return Ok(ParsedFile {
+            dataset,
+            sheets,
+            sheet: active,
+        });
     }
 
-    parse_delimited(bytes)
+    let dataset = if bytes.starts_with(NPY_MAGIC) || extension == Some("npy") {
+        parse_npy(bytes)?
+    } else if bytes.starts_with(PARQUET_MAGIC) || extension == Some("parquet") {
+        parse_parquet(bytes)?
+    } else if bytes.starts_with(ARROW_MAGIC)
+        || matches!(extension, Some("arrow" | "feather" | "ipc"))
+    {
+        parse_arrow_ipc(bytes)?
+    } else {
+        parse_delimited(bytes)?
+    };
+
+    Ok(ParsedFile {
+        dataset,
+        sheets: Vec::new(),
+        sheet: 0,
+    })
 }
 
 /// Assembles parsed columns into a [`Dataset`], splitting numeric features
@@ -192,26 +226,39 @@ fn parse_delimited(bytes: &[u8]) -> Result<Dataset, IngestError> {
         .delimiter(delimiter)
         .from_reader(bytes);
 
-    let mut rows: Vec<csv::StringRecord> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::new();
     for record in reader.records() {
-        rows.push(record?);
+        rows.push(record?.iter().map(str::to_owned).collect());
     }
+
+    dataset_from_string_rows(rows)
+}
+
+/// Builds a [`Dataset`] from rows of stringified cells, shared by delimited text
+/// and spreadsheets. The first row is a header when dropping it makes some column
+/// fully numeric. Fully-numeric columns become features, the rest label columns.
+/// A cell index past a row's end reads as empty.
+fn dataset_from_string_rows(rows: Vec<Vec<String>>) -> Result<Dataset, IngestError> {
     if rows.is_empty() {
         return Err(IngestError::Empty);
     }
 
     let n_columns = rows[0].len();
+    fn cell(row: &[String], c: usize) -> &str {
+        row.get(c).map(String::as_str).unwrap_or("")
+    }
     let parses = |field: &str| field.trim().parse::<f32>().is_ok();
 
     // A column is numeric over the candidate data rows (all rows but the
     // first) when every value parses as a float. The first row belongs to a
     // header when some such column has a non parseable first value.
     let has_header = rows.len() > 1
-        && (0..n_columns)
-            .any(|c| rows[1..].iter().all(|row| parses(&row[c])) && !parses(&rows[0][c]));
+        && (0..n_columns).any(|c| {
+            rows[1..].iter().all(|row| parses(cell(row, c))) && !parses(cell(&rows[0], c))
+        });
 
-    let (names, data_rows): (Vec<String>, &[csv::StringRecord]) = if has_header {
-        (rows[0].iter().map(str::to_owned).collect(), &rows[1..])
+    let (names, data_rows): (Vec<String>, &[Vec<String>]) = if has_header {
+        (rows[0].iter().map(String::clone).collect(), &rows[1..])
     } else {
         (
             (0..n_columns).map(|c| format!("column_{c}")).collect(),
@@ -224,18 +271,18 @@ fn parse_delimited(bytes: &[u8]) -> Result<Dataset, IngestError> {
 
     let columns: Vec<Column> = (0..n_columns)
         .map(|c| {
-            if data_rows.iter().all(|row| parses(&row[c])) {
+            if data_rows.iter().all(|row| parses(cell(row, c))) {
                 Column::Numeric(
                     data_rows
                         .iter()
-                        .map(|row| row[c].trim().parse::<f32>().unwrap())
+                        .map(|row| cell(row, c).trim().parse::<f32>().unwrap())
                         .collect(),
                 )
             } else {
                 Column::Text(
                     data_rows
                         .iter()
-                        .map(|row| row[c].trim().to_owned())
+                        .map(|row| cell(row, c).trim().to_owned())
                         .collect(),
                 )
             }
@@ -247,6 +294,58 @@ fn parse_delimited(bytes: &[u8]) -> Result<Dataset, IngestError> {
     }
 
     Ok(assemble(names, columns, data_rows.len()))
+}
+
+/// Parses one worksheet of a spreadsheet (`.xlsx`, `.ods`, `.xls`, `.xlsb`),
+/// returning the [`Dataset`], all worksheet names, and the index parsed (the
+/// `sheet` argument clamped into range). Cells are stringified and fed through
+/// the same typing as delimited text. Fully empty rows are dropped so trailing
+/// blanks do not poison it.
+fn parse_spreadsheet(
+    bytes: &[u8],
+    sheet: usize,
+) -> Result<(Dataset, Vec<String>, usize), IngestError> {
+    use calamine::{Reader, open_workbook_auto_from_rs};
+    use std::io::Cursor;
+
+    // A `Cursor<&[u8]>` is Read + Seek + Clone, so the auto-detector can probe
+    // the formats by cheaply cloning the cursor (a pointer copy) rather than
+    // deep-copying the file, which a `Cursor<Vec<u8>>` would do on every probe.
+    let mut workbook = open_workbook_auto_from_rs(Cursor::new(bytes))
+        .map_err(|e| IngestError::Spreadsheet(e.to_string()))?;
+    let sheets = workbook.sheet_names();
+    if sheets.is_empty() {
+        return Err(IngestError::Empty);
+    }
+    let active = sheet.min(sheets.len() - 1);
+    let range = workbook
+        .worksheet_range(&sheets[active])
+        .map_err(|e| IngestError::Spreadsheet(e.to_string()))?;
+
+    let rows: Vec<Vec<String>> = range
+        .rows()
+        .map(|row| row.iter().map(cell_to_string).collect::<Vec<String>>())
+        .filter(|row| row.iter().any(|cell| !cell.is_empty()))
+        .collect();
+
+    let dataset = dataset_from_string_rows(rows)?;
+    Ok((dataset, sheets, active))
+}
+
+/// Stringifies a spreadsheet cell for the delimited-text column typing. Numbers
+/// (and date serials) become parseable floats, booleans and ISO date/time
+/// strings become labels, empty and error cells become the empty string.
+fn cell_to_string(cell: &calamine::Data) -> String {
+    use calamine::Data;
+    match cell {
+        Data::Int(value) => value.to_string(),
+        Data::Float(value) => value.to_string(),
+        Data::DateTime(value) => value.as_f64().to_string(),
+        Data::Bool(value) => value.to_string(),
+        Data::String(value) => value.clone(),
+        Data::DateTimeIso(value) | Data::DurationIso(value) => value.clone(),
+        Data::Error(_) | Data::Empty => String::new(),
+    }
 }
 
 /// Tells the delimiter of the first line apart, tab versus comma.

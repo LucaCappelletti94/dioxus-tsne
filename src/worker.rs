@@ -4,7 +4,7 @@ use gloo_worker::{HandlerId, Worker, WorkerScope};
 use send_wrapper::SendWrapper;
 
 use crate::compute::{TsneCache, decompose_cached};
-use crate::ingest::parse_dataset;
+use crate::ingest::parse_file;
 use crate::messages::{DecompositionMethod, TsnePhase, WorkerRequest, WorkerResponse};
 
 /// Smallest gap between streamed snapshot frames, capping the live preview to
@@ -40,14 +40,27 @@ impl Worker for DecompositionWorker {
 
     fn received(&mut self, scope: &WorkerScope<Self>, input: Self::Input, id: HandlerId) {
         match input {
-            WorkerRequest::Load { name, bytes, run } => match parse_dataset(&name, &bytes) {
-                Ok(dataset) => {
+            WorkerRequest::Load {
+                name,
+                bytes,
+                sheet,
+                run,
+            } => match parse_file(&name, &bytes, sheet) {
+                Ok(parsed) => {
                     // Hand the parsed dataset back so the UI can color it and
                     // re-run it later, then run here on the worker's own copy.
+                    let dataset = parsed.dataset;
                     let data = dataset.data.clone();
                     let n_samples = dataset.n_samples;
                     let n_features = dataset.n_features;
-                    scope.respond(id, WorkerResponse::Loaded { dataset });
+                    scope.respond(
+                        id,
+                        WorkerResponse::Loaded {
+                            dataset,
+                            sheets: parsed.sheets,
+                            sheet: parsed.sheet,
+                        },
+                    );
                     if let Some(method) = run {
                         run_decomposition(
                             scope,

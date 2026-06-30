@@ -659,6 +659,20 @@ a.decompositions-iconbtn {
     padding: 0.15rem 0.3rem;
 }
 
+/* Sheet picker: full-width select above the column list for multi-sheet
+   spreadsheets. */
+.decompositions-sheet-select {
+    width: 100%;
+    font: inherit;
+    font-size: 0.8rem;
+    color: var(--ddx-ink);
+    background: transparent;
+    border: 1px solid var(--ddx-line);
+    border-radius: 5px;
+    padding: 0.25rem 0.4rem;
+    cursor: pointer;
+}
+
 /* In-app "About t-SNE" overlay, animated in over the plot. */
 .decompositions-about-backdrop {
     position: absolute;

@@ -110,6 +110,9 @@ pub enum WorkerRequest {
         name: String,
         /// The raw file contents.
         bytes: Vec<u8>,
+        /// For a spreadsheet, the index of the worksheet to parse (clamped into
+        /// range). Ignored for every other format. 0 selects the first sheet.
+        sheet: usize,
         /// The decomposition to run on the parsed data, or `None` to only load.
         run: Option<DecompositionMethod>,
     },
@@ -135,6 +138,11 @@ pub enum WorkerResponse {
     Loaded {
         /// The parsed dataset (matrix and label columns).
         dataset: Dataset,
+        /// Worksheet names of the source workbook, empty for non-spreadsheet
+        /// formats. Lets the UI offer a sheet picker.
+        sheets: Vec<String>,
+        /// Index into `sheets` of the worksheet that produced `dataset`.
+        sheet: usize,
     },
     /// A `Load` request failed to parse.
     LoadError {

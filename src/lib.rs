@@ -69,7 +69,7 @@ pub const DEFAULT_STYLE: &str = include_str!("style.css");
 pub use color::{ColorScale, Coloring, LegendEntry, Marker, colorize};
 pub use components::{DEFAULT_WORKER_URL, Decomposition, DropZone, ExampleDataset, ExampleIcon};
 pub use compute::{DecomposeOutput, decompose};
-pub use ingest::{Dataset, IngestError, LabelColumn, parse_dataset};
+pub use ingest::{Dataset, IngestError, LabelColumn, ParsedFile, parse_dataset, parse_file};
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
 pub use pca::{PcaResult, pca};
 pub use plot::ScatterPlot;

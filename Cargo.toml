@@ -36,6 +36,11 @@ arrow-ipc = { version = "58", default-features = false, features = ["lz4"] }
 arrow-schema = "58"
 bhtsne = { git = "https://github.com/frjnn/bhtsne", default-features = false, features = ["wasm_js"] }
 bytes = "1"
+# Spreadsheet reading (.xlsx, .ods, and the legacy .xls / .xlsb). Pure Rust, so
+# it builds on wasm32-unknown-unknown. default-features off drops the `dates`
+# feature (and its chrono dependency): date cells come through as their numeric
+# serial, which is fine for an embedding.
+calamine = { version = "0.31", default-features = false }
 csv = "1"
 dioxus.workspace = true
 dioxus-free-icons = { version = "0.10.0", default-features = false, features = [
@@ -84,4 +89,5 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+rust_xlsxwriter = "0.95.0"
 serde_json = "1.0.150"

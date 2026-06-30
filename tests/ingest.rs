@@ -1,6 +1,6 @@
 //! Tests for the file ingestion module.
 
-use dioxus_tsne::{Dataset, IngestError, parse_dataset};
+use dioxus_tsne::{Dataset, IngestError, parse_dataset, parse_file};
 
 #[test]
 fn csv_with_header_and_label_column() {
@@ -159,6 +159,91 @@ fn parquet_with_nulls_in_numeric_column_is_rejected() {
     assert!(matches!(
         parse_dataset("data.parquet", &buffer),
         Err(IngestError::MissingValues { .. })
+    ));
+}
+
+/// Builds a two-sheet `.xlsx` in memory: `alpha` has a header, one numeric
+/// feature and one text label, `beta` has a header and two numeric features.
+fn xlsx_two_sheets() -> Vec<u8> {
+    use rust_xlsxwriter::Workbook;
+
+    let mut workbook = Workbook::new();
+
+    let alpha = workbook.add_worksheet();
+    alpha.set_name("alpha").unwrap();
+    alpha.write(0, 0, "score").unwrap();
+    alpha.write(0, 1, "kind").unwrap();
+    alpha.write(1, 0, 1.5).unwrap();
+    alpha.write(1, 1, "a").unwrap();
+    alpha.write(2, 0, 2.5).unwrap();
+    alpha.write(2, 1, "b").unwrap();
+
+    let beta = workbook.add_worksheet();
+    beta.set_name("beta").unwrap();
+    beta.write(0, 0, "p").unwrap();
+    beta.write(0, 1, "q").unwrap();
+    beta.write(1, 0, 10).unwrap();
+    beta.write(1, 1, 20).unwrap();
+    beta.write(2, 0, 30).unwrap();
+    beta.write(2, 1, 40).unwrap();
+
+    workbook.save_to_buffer().unwrap()
+}
+
+#[test]
+fn xlsx_first_sheet_splits_features_and_labels() {
+    let bytes = xlsx_two_sheets();
+    let parsed = parse_file("book.xlsx", &bytes, 0).unwrap();
+
+    assert_eq!(parsed.sheets, ["alpha", "beta"]);
+    assert_eq!(parsed.sheet, 0);
+    let dataset = parsed.dataset;
+    assert_eq!(dataset.n_samples, 2);
+    assert_eq!(dataset.n_features, 1);
+    assert_eq!(dataset.feature_names, ["score"]);
+    assert_eq!(dataset.data, [1.5, 2.5]);
+    assert_eq!(dataset.label_columns.len(), 1);
+    assert_eq!(dataset.label_columns[0].name, "kind");
+    assert_eq!(dataset.label_columns[0].values, ["a", "b"]);
+}
+
+#[test]
+fn xlsx_sheet_index_selects_the_worksheet() {
+    let bytes = xlsx_two_sheets();
+    let parsed = parse_file("book.xlsx", &bytes, 1).unwrap();
+
+    assert_eq!(parsed.sheet, 1);
+    let dataset = parsed.dataset;
+    assert_eq!(dataset.n_features, 2);
+    assert_eq!(dataset.feature_names, ["p", "q"]);
+    assert_eq!(dataset.data, [10.0, 20.0, 30.0, 40.0]);
+    assert!(dataset.label_columns.is_empty());
+}
+
+#[test]
+fn xlsx_out_of_range_sheet_clamps_to_last() {
+    let bytes = xlsx_two_sheets();
+    let parsed = parse_file("book.xlsx", &bytes, 99).unwrap();
+    assert_eq!(parsed.sheet, 1);
+    assert_eq!(parsed.dataset.feature_names, ["p", "q"]);
+}
+
+#[test]
+fn xlsx_text_only_sheet_is_rejected() {
+    use rust_xlsxwriter::Workbook;
+
+    let mut workbook = Workbook::new();
+    let notes = workbook.add_worksheet();
+    notes.set_name("notes").unwrap();
+    notes.write(0, 0, "title").unwrap();
+    notes.write(0, 1, "author").unwrap();
+    notes.write(1, 0, "hello").unwrap();
+    notes.write(1, 1, "me").unwrap();
+    let bytes = workbook.save_to_buffer().unwrap();
+
+    assert!(matches!(
+        parse_file("notes.xlsx", &bytes, 0),
+        Err(IngestError::NoNumericColumns)
     ));
 }
 

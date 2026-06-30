@@ -105,6 +105,25 @@ enum RunInfo {
     },
 }
 
+/// Worksheets of the loaded file. Empty `names` (not a spreadsheet) hides the
+/// sheet picker.
+#[derive(Clone, PartialEq, Default)]
+struct SheetState {
+    /// Worksheet names in file order.
+    names: Vec<String>,
+    /// Index into `names` of the worksheet shown.
+    active: usize,
+}
+
+/// Whether a file name is a spreadsheet (so it can carry multiple worksheets).
+/// Mirrors the extensions `ingest::parse_file` routes to calamine.
+fn is_spreadsheet_name(name: &str) -> bool {
+    name.rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|ext| matches!(ext.as_str(), "xlsx" | "ods" | "xls" | "xlsb"))
+}
+
 /// Where a column's values live in the parsed [`Dataset`]: either a column of
 /// the numeric feature matrix, or one of the text label columns.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -219,6 +238,7 @@ const HELP_INFINITE: &str = "Keep iterating with no fixed limit until you press 
 const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
 const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 30 by default, a typical range is 30 to 50, 2 or more.";
 const HELP_COLUMNS: &str = "What each column does. Feature: fed into t-SNE. Label: kept out of t-SNE and offered as a color (numeric labels become a heatmap). Ignore: dropped entirely.";
+const HELP_SHEET: &str = "Which worksheet of the spreadsheet to read. Switching re-parses that sheet, so its columns and coloring reset.";
 const HELP_EARLY_EXAGGERATION: &str = "How hard clusters are pushed apart early in the run, before the layout settles. 12 is the standard value, 1 turns it off. Ignored when continuing a run.";
 const HELP_EXAGGERATION_EPOCHS: &str = "How many epochs that early push lasts. 250 is typical. 0 turns early exaggeration off. Ignored when continuing a run.";
 const HELP_RUN: &str =
@@ -240,7 +260,7 @@ const HELP_STATUS_KL: &str = "Kullback-Leibler divergence: how faithfully the 2-
 const HELP_STATUS_LOADING: &str = "Reading and parsing your file off the main thread.";
 
 /// File input `accept` attribute.
-const DATA_ACCEPT: &str = ".csv,.tsv,.parquet,.arrow,.feather,.npy";
+const DATA_ACCEPT: &str = ".csv,.tsv,.parquet,.arrow,.feather,.npy,.xlsx,.ods,.xls,.xlsb";
 
 /// Default URL the worker loader module is served from, the path the reference
 /// `build.rs` writes it to (`public/dioxus-decompositions/loader.js`, served at
@@ -262,6 +282,7 @@ fn spawn_bridge(
     ingest_error: Signal<Option<String>>,
     color_source: Signal<String>,
     run_info: Signal<Option<RunInfo>>,
+    sheet_state: Signal<SheetState>,
 ) -> WorkerBridge<DecompositionWorker> {
     DecompositionWorker::spawner()
         // The URL points at a loader module that initializes the wasm-bindgen
@@ -276,11 +297,20 @@ fn spawn_bridge(
             let mut ingest_error = ingest_error;
             let mut color_source = color_source;
             let mut run_info = run_info;
+            let mut sheet_state = sheet_state;
             match response {
-                WorkerResponse::Loaded { dataset: parsed } => {
+                WorkerResponse::Loaded {
+                    dataset: parsed,
+                    sheets,
+                    sheet,
+                } => {
                     // Parsing happened off the main thread; adopt the result,
                     // coloring by the first label column.
                     ingest_error.set(None);
+                    sheet_state.set(SheetState {
+                        names: sheets,
+                        active: sheet,
+                    });
                     color_source.set(
                         parsed
                             .label_columns
@@ -294,6 +324,9 @@ fn spawn_bridge(
                     dataset.set(Some(parsed));
                 }
                 WorkerResponse::LoadError { message } => {
+                    // Keep `sheet_state` as is: if a sheet switch failed (a sheet
+                    // with no numeric column), the picker must survive so the
+                    // user can pick another. `load` clears it for a new file.
                     dataset.set(None);
                     status.set(String::from("idle"));
                     ingest_error.set(Some(message));
@@ -398,12 +431,14 @@ pub struct DropZone {
 impl Default for DropZone {
     fn default() -> Self {
         Self {
-            accept: ["csv", "tsv", "parquet", "arrow", "feather", "npy"]
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            accept: [
+                "csv", "tsv", "parquet", "arrow", "feather", "npy", "xlsx", "ods", "xls", "xlsb",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
             prompt: String::from(
-                "Drop a CSV, TSV, Parquet, Arrow or NumPy (.npy) file here, or click to browse",
+                "Drop a CSV, TSV, Parquet, Arrow, NumPy (.npy) or Excel/ODS file here, or click to browse",
             ),
         }
     }
@@ -656,6 +691,12 @@ fn DecompositionView(config: Decomposition) -> Element {
 
     let dataset = use_signal(move || preset_dataset);
     let ingest_error = use_signal(|| None::<String>);
+    // Worksheets of the loaded file, set from the worker's Loaded response.
+    // Drives the sheet picker in settings.
+    let sheet_state = use_signal(SheetState::default);
+    // Bytes and name of the loaded spreadsheet, retained so a sheet switch can
+    // re-parse without a re-upload. `None` for non-spreadsheet files.
+    let workbook_file = use_signal(|| None::<(String, Vec<u8>)>);
     let status = use_signal(|| String::from("idle"));
     let phase = use_signal(|| None::<TsnePhase>);
     let embedding = use_signal(|| None::<Vec<f32>>);
@@ -841,6 +882,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             ingest_error,
             color_source,
             run_info,
+            sheet_state,
         )))
     });
 
@@ -924,7 +966,7 @@ fn DecompositionView(config: Decomposition) -> Element {
     let load = {
         let bridge = bridge.clone();
         let worker_url = worker_url.clone();
-        move |name: String, bytes: Vec<u8>, run: Option<DecompositionMethod>| {
+        move |name: String, bytes: Vec<u8>, run: Option<DecompositionMethod>, sheet: usize| {
             if busy() {
                 *bridge.borrow_mut() = spawn_bridge(
                     &worker_url,
@@ -935,8 +977,23 @@ fn DecompositionView(config: Decomposition) -> Element {
                     ingest_error,
                     color_source,
                     run_info,
+                    sheet_state,
                 );
             }
+            // Retain a spreadsheet's bytes so the picker can re-parse another
+            // sheet without a re-upload. A switch (same file) keeps the picker;
+            // any new file forgets it. Other formats do not retain their bytes.
+            let mut workbook_file = workbook_file;
+            let mut sheet_state = sheet_state;
+            let switching_sheet = is_spreadsheet_name(&name)
+                && workbook_file
+                    .read()
+                    .as_ref()
+                    .is_some_and(|(n, _)| n == &name);
+            if !switching_sheet {
+                sheet_state.set(SheetState::default());
+            }
+            workbook_file.set(is_spreadsheet_name(&name).then(|| (name.clone(), bytes.clone())));
             let mut status = status;
             let mut embedding = embedding;
             let mut ingest_error = ingest_error;
@@ -947,9 +1004,12 @@ fn DecompositionView(config: Decomposition) -> Element {
             } else {
                 "loading"
             }));
-            bridge
-                .borrow()
-                .send(WorkerRequest::Load { name, bytes, run });
+            bridge.borrow().send(WorkerRequest::Load {
+                name,
+                bytes,
+                sheet,
+                run,
+            });
         }
     };
 
@@ -1040,6 +1100,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     ingest_error,
                     color_source,
                     run_info,
+                    sheet_state,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1079,6 +1140,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     ingest_error,
                     color_source,
                     run_info,
+                    sheet_state,
                 );
             }
             // Stop and discard any recording, armed or finished.
@@ -1317,6 +1379,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                     ingest_error,
                     color_source,
                     run_info,
+                    sheet_state,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1452,7 +1515,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                             return;
                         }
                         match file.read_bytes().await {
-                            Ok(bytes) => load(name, bytes.to_vec(), None),
+                            Ok(bytes) => load(name, bytes.to_vec(), None, 0),
                             Err(error) => {
                                 let mut ingest_error = ingest_error;
                                 ingest_error.set(Some(error.to_string()));
@@ -1642,7 +1705,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                                         Err(error) => Err(error),
                                                     };
                                                     match fetched {
-                                                        Ok(bytes) => load(url, bytes, None),
+                                                        Ok(bytes) => load(url, bytes, None, 0),
                                                         Err(error) => {
                                                             let mut status = status;
                                                             let mut ingest_error = ingest_error;
@@ -1689,7 +1752,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                                 return;
                                             };
                                             match file.read_bytes().await {
-                                                Ok(bytes) => load(file.name(), bytes.to_vec(), None),
+                                                Ok(bytes) => load(file.name(), bytes.to_vec(), None, 0),
                                                 Err(error) => {
                                                     let mut ingest_error = ingest_error;
                                                     ingest_error.set(Some(error.to_string()));
@@ -2050,6 +2113,42 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 r#type: "checkbox",
                                 checked: legend_in_export(),
                                 onchange: move |evt| legend_in_export.set(evt.checked()),
+                            }
+                        }
+                    }
+                    if sheet_state.read().names.len() > 1 {
+                        p {
+                            class: "decompositions-section-title",
+                            title: HELP_SHEET,
+                            "aria-label": HELP_SHEET,
+                            "Sheet"
+                        }
+                        {
+                            let load = load.clone();
+                            rsx! {
+                                select {
+                                    class: "decompositions-sheet-select",
+                                    title: HELP_SHEET,
+                                    "aria-label": HELP_SHEET,
+                                    value: "{sheet_state.read().active}",
+                                    onchange: move |evt| {
+                                        let Ok(index) = evt.value().parse::<usize>() else {
+                                            return;
+                                        };
+                                        if index == sheet_state.read().active {
+                                            return;
+                                        }
+                                        // Re-parse the chosen worksheet from the
+                                        // retained bytes, paused (Play runs it).
+                                        let file = workbook_file.read().clone();
+                                        if let Some((name, bytes)) = file {
+                                            load(name, bytes, None, index);
+                                        }
+                                    },
+                                    for (index, name) in sheet_state.read().names.iter().enumerate() {
+                                        option { value: "{index}", "{name}" }
+                                    }
+                                }
                             }
                         }
                     }
