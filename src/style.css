@@ -193,6 +193,25 @@ a.decompositions-iconbtn {
     }
 }
 
+/* When a dataset is loaded but no run has started, the play button pulses
+   gently in green to invite the user to begin. */
+.decompositions-tp-play--attention {
+    animation: decompositions-play-pulse 1.4s ease-in-out 0.5s 3;
+    transform-origin: center;
+}
+
+@keyframes decompositions-play-pulse {
+    0%,
+    100% {
+        color: var(--ddx-ink);
+        transform: scale(1);
+    }
+    50% {
+        color: #16a34a;
+        transform: scale(1.12);
+    }
+}
+
 /* Indeterminate sweep, used by the transport scrubber. */
 @keyframes decompositions-indeterminate {
     0% {
@@ -342,7 +361,7 @@ a.decompositions-iconbtn {
     flex-wrap: wrap;
     justify-content: center;
     align-items: center;
-    gap: 0.1rem 0.6rem;
+    gap: 0.1rem 0.15rem;
     padding: 0.1rem 0.2rem;
     font-size: 0.74rem;
     color: var(--ddx-muted);
@@ -597,13 +616,13 @@ a.decompositions-iconbtn {
 
 .decompositions-field input[type="number"] {
     font: inherit;
-    font-size: 0.83rem;
-    width: 5rem;
+    font-size: 0.95rem;
+    width: 6rem;
     color: var(--ddx-ink);
     background: transparent;
     border: 1px solid var(--ddx-line);
     border-radius: 6px;
-    padding: 0.3rem 0.4rem;
+    padding: 0.4rem 0.5rem;
 }
 
 .decompositions-field input[type="checkbox"] {
@@ -809,26 +828,37 @@ a.decompositions-iconbtn {
     }
 }
 
-/* Export panel buttons. */
+/* Export panel buttons: compact icon stacks. */
 .decompositions-export-btn {
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
+    gap: 0.3rem;
+    padding: 0.5rem 0.7rem;
     font: inherit;
-    font-size: 0.85rem;
+    font-size: 0.7rem;
     font-weight: 500;
-    border: 1px solid var(--ddx-line);
+    letter-spacing: 0.02em;
+    border: none;
     border-radius: 8px;
     background: transparent;
     color: var(--ddx-ink);
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: color 0.15s ease;
 }
 
 .decompositions-export-btn:hover {
-    background: var(--ddx-hover);
+    background: transparent;
 }
+
+/* Format-specific hover colors. */
+.decompositions-export-btn--png:hover { color: #2563eb; }
+.decompositions-export-btn--svg:hover { color: #9333ea; }
+.decompositions-export-btn--csv:hover { color: #16a34a; }
+.decompositions-export-btn--npy:hover { color: #ea580c; }
+.decompositions-export-btn--parquet:hover { color: #0891b2; }
+.decompositions-export-btn--arrow:hover { color: #dc2626; }
+.decompositions-export-btn--webm:hover { color: #e11d48; }
 
 .decompositions-export-icon {
     display: inline-flex;

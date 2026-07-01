@@ -19,10 +19,10 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBan, FaCalculator, FaChevronLeft, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload, FaExpand,
+    FaBan, FaBolt, FaCalculator, FaChevronLeft, FaCircleNodes, FaCircleQuestion, FaCompress, FaDatabase, FaDownload, FaExpand,
     FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaPalette,
-    FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTag, FaTable,
-    FaTriangleExclamation, FaVideo, FaXmark,
+    FaCube, FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShirt, FaSliders, FaSpinner, FaTag, FaTable,
+    FaShareNodes, FaTriangleExclamation, FaVectorSquare, FaVideo, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -988,6 +988,37 @@ fn DecompositionView(config: Decomposition) -> Element {
         closure.forget();
     });
 
+    // Close the download panel when clicking outside the transport bar.
+    use_hook(move || {
+        let showing_data_download = showing_data_download.to_owned();
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let inside = event
+                .target()
+                .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+                .map(|node| {
+                    web_sys::window()
+                        .and_then(|window| window.document())
+                        .map(|document| {
+                            document
+                                .get_element_by_id("transport")
+                                .is_some_and(|el| el.contains(Some(&node)))
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if !inside && showing_data_download() {
+                let mut panel = showing_data_download;
+                panel.set(false);
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = document
+            .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref());
+        closure.forget();
+    });
+
     // Keep the canvas size in step with the viewport.
     use_hook(move || {
         let Some(window) = web_sys::window() else {
@@ -1541,6 +1572,285 @@ fn DecompositionView(config: Decomposition) -> Element {
         }
     };
 
+    // Export the current embedding coordinates as a NumPy .npy file.
+    let export_npy = {
+        let embedding = embedding.to_owned();
+        move |_| {
+            let Some(points) = &*embedding.read() else {
+                return;
+            };
+            let n = points.len() / 2;
+
+            // Build the .npy header.
+            let header = format!(
+                "{{'descr': '', 'fortran_order': False, 'shape': ({}, 2), }}",
+                n
+            );
+            // NPY v1.0: 6-byte magic + 2-byte version + 2-byte header len + header + newline.
+            let header_len = header.len() + 1; // +1 for trailing newline
+            // Pad header to be divisible by 64 (including magic + version + len fields = 10 bytes).
+            let total_header_len = 10 + header_len;
+            let padding = 64 - (total_header_len % 64);
+            let padded_len = header_len + padding - 1; // -1 because newline counts
+
+            let mut buf = Vec::with_capacity(10 + padded_len + n * 2 * 4);
+            // Magic: \x93NUMPY
+            buf.extend_from_slice(&[0x93, b'N', b'U', b'M', b'P', b'Y']);
+            // Version 1.0
+            buf.push(1);
+            buf.push(0);
+            // Header length (little-endian u16)
+            let hl = padded_len as u16;
+            buf.push((hl & 0xFF) as u8);
+            buf.push(((hl >> 8) & 0xFF) as u8);
+            // Header dict
+            buf.extend_from_slice(header.as_bytes());
+            // Padding spaces
+            for _ in 0..(padding - 1) {
+                buf.push(b' ');
+            }
+            // Trailing newline
+            buf.push(b'\n');
+            // Data: (N, 2) float32, C-order (row-major).
+            for i in 0..n {
+                buf.extend_from_slice(&points[i * 2].to_le_bytes());
+                buf.extend_from_slice(&points[i * 2 + 1].to_le_bytes());
+            }
+
+            if let Some(window) = web_sys::window() {
+                let bytes = js_sys::Uint8Array::from(buf.as_slice());
+                let options = web_sys::BlobPropertyBag::new();
+                options.set_type("application/octet-stream");
+                let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
+                    &js_sys::Array::of1(&bytes.into()),
+                    &options,
+                );
+                if let Ok(blob) = blob
+                    && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+                    && let Some(document) = window.document()
+                    && let Ok(anchor_el) = document.create_element("a")
+                    && let Ok(anchor) = anchor_el.dyn_into::<web_sys::HtmlAnchorElement>()
+                {
+                    anchor.set_href(&url);
+                    anchor.set_download("tsne.npy");
+                    anchor.click();
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+            }
+        }
+    };
+
+    // Export the current embedding as a Parquet file.
+    let export_parquet = {
+        let embedding = embedding.to_owned();
+        let dataset = dataset.to_owned();
+        let color_source = color_source.to_owned();
+        move |_| {
+            let Some(points) = &*embedding.read() else {
+                return;
+            };
+
+            // Build Arrow arrays for tsne_x and tsne_y.
+            use arrow_array::{Float32Array, RecordBatch, StringArray};
+            use arrow_schema::{DataType, Field, Schema};
+
+            let x_array = Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+            let y_array = Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+
+            // Determine if a label column is active.
+            let label_array: Option<StringArray> = if color_source() != "none" {
+                let source = color_source();
+                if let Some(col_name) = source.strip_prefix("column:") {
+                    if let Some(ds) = &*dataset.read() {
+                        if let Some(lc) = ds.label_columns.iter().find(|lc| lc.name == col_name) {
+                            Some(StringArray::from(lc.values.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let schema = if label_array.is_some() {
+                Schema::new(vec![
+                    Field::new("tsne_x", DataType::Float32, false),
+                    Field::new("tsne_y", DataType::Float32, false),
+                    Field::new("label", DataType::Utf8, true),
+                ])
+            } else {
+                Schema::new(vec![
+                    Field::new("tsne_x", DataType::Float32, false),
+                    Field::new("tsne_y", DataType::Float32, false),
+                ])
+            };
+
+            let batch = if let Some(label) = label_array {
+                RecordBatch::try_new(
+                    std::sync::Arc::new(schema),
+                    vec![
+                        std::sync::Arc::new(x_array),
+                        std::sync::Arc::new(y_array),
+                        std::sync::Arc::new(label),
+                    ],
+                )
+            } else {
+                RecordBatch::try_new(
+                    std::sync::Arc::new(schema),
+                    vec![
+                        std::sync::Arc::new(x_array),
+                        std::sync::Arc::new(y_array),
+                    ],
+                )
+            };
+
+            let Ok(batch) = batch else {
+                return;
+            };
+
+            // Write to memory via Cursor.
+            use parquet::file::properties::WriterProperties;
+            use parquet::arrow::ArrowWriter;
+
+            let mut buf = vec![];
+            let props = WriterProperties::builder().build();
+            let mut writer = ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
+            if writer.write(&batch).is_err() || writer.close().is_err() {
+                return;
+            }
+
+            if let Some(window) = web_sys::window() {
+                let bytes = js_sys::Uint8Array::from(buf.as_slice());
+                let options = web_sys::BlobPropertyBag::new();
+                options.set_type("application/octet-stream");
+                let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
+                    &js_sys::Array::of1(&bytes.into()),
+                    &options,
+                );
+                if let Ok(blob) = blob
+                    && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+                    && let Some(document) = window.document()
+                    && let Ok(anchor_el) = document.create_element("a")
+                    && let Ok(anchor) = anchor_el.dyn_into::<web_sys::HtmlAnchorElement>()
+                {
+                    anchor.set_href(&url);
+                    anchor.set_download("tsne.parquet");
+                    anchor.click();
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+            }
+        }
+    };
+
+    // Export the current embedding as an Arrow IPC file.
+    let export_arrow = {
+        let embedding = embedding.to_owned();
+        let dataset = dataset.to_owned();
+        let color_source = color_source.to_owned();
+        move |_| {
+            let Some(points) = &*embedding.read() else {
+                return;
+            };
+
+            use arrow_array::{Float32Array, RecordBatch, StringArray};
+            use arrow_ipc::writer::FileWriter;
+            use arrow_schema::{DataType, Field, Schema};
+
+            let x_array = Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+            let y_array = Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+
+            let label_array: Option<StringArray> = if color_source() != "none" {
+                let source = color_source();
+                if let Some(col_name) = source.strip_prefix("column:") {
+                    if let Some(ds) = &*dataset.read() {
+                        if let Some(lc) = ds.label_columns.iter().find(|lc| lc.name == col_name) {
+                            Some(StringArray::from(lc.values.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let schema = if label_array.is_some() {
+                Schema::new(vec![
+                    Field::new("tsne_x", DataType::Float32, false),
+                    Field::new("tsne_y", DataType::Float32, false),
+                    Field::new("label", DataType::Utf8, true),
+                ])
+            } else {
+                Schema::new(vec![
+                    Field::new("tsne_x", DataType::Float32, false),
+                    Field::new("tsne_y", DataType::Float32, false),
+                ])
+            };
+
+            let batch = if let Some(label) = label_array {
+                RecordBatch::try_new(
+                    std::sync::Arc::new(schema),
+                    vec![
+                        std::sync::Arc::new(x_array),
+                        std::sync::Arc::new(y_array),
+                        std::sync::Arc::new(label),
+                    ],
+                )
+            } else {
+                RecordBatch::try_new(
+                    std::sync::Arc::new(schema),
+                    vec![
+                        std::sync::Arc::new(x_array),
+                        std::sync::Arc::new(y_array),
+                    ],
+                )
+            };
+
+            let Ok(batch) = batch else {
+                return;
+            };
+
+            let mut buf = vec![];
+            let mut writer = FileWriter::try_new(&mut buf, &batch.schema()).unwrap();
+            if writer.write(&batch).is_err() {
+                return;
+            }
+            if writer.finish().is_err() {
+                return;
+            }
+
+            if let Some(window) = web_sys::window() {
+                let bytes = js_sys::Uint8Array::from(buf.as_slice());
+                let options = web_sys::BlobPropertyBag::new();
+                options.set_type("application/octet-stream");
+                let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
+                    &js_sys::Array::of1(&bytes.into()),
+                    &options,
+                );
+                if let Ok(blob) = blob
+                    && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+                    && let Some(document) = window.document()
+                    && let Ok(anchor_el) = document.create_element("a")
+                    && let Ok(anchor) = anchor_el.dyn_into::<web_sys::HtmlAnchorElement>()
+                {
+                    anchor.set_href(&url);
+                    anchor.set_download("tsne.arrow");
+                    anchor.click();
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+            }
+        }
+    };
+
     // Transport controls (media-player style). Pause freezes a running fit by
     // orphaning its worker (it self-closes after its current run) and installing
     // a fresh idle one, so Play can warm-start from the frozen layout.
@@ -2004,6 +2314,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             // bottom when the run (and any recording) starts.
             if controls && dataset.read().is_some() {
                 div {
+                    id: "transport",
                     class: if embedding.read().is_none() && !busy() { "decompositions-transport decompositions-transport--centered" } else { "decompositions-transport" },
                     div { class: "decompositions-transport-row",
                         if showing_data_download() {
@@ -2019,7 +2330,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     Icon { icon: FaChevronLeft, width: 14, height: 14, class: "decompositions-icon" }
                                 }
                                 button {
-                                    class: "decompositions-export-btn",
+                                    class: "decompositions-export-btn decompositions-export-btn--png",
+                                    title: "Download the current frame as a PNG image",
+                                    "aria-label": "Download as PNG image",
                                     onclick: download_image,
                                     span { class: "decompositions-export-icon",
                                         Icon { icon: FaImage, width: 16, height: 16, class: "decompositions-icon" }
@@ -2027,7 +2340,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     span { class: "decompositions-export-label", "PNG" }
                                 }
                                 button {
-                                    class: "decompositions-export-btn",
+                                    class: "decompositions-export-btn decompositions-export-btn--svg",
+                                    title: "Download the plot as a scalable SVG vector graphic",
+                                    "aria-label": "Download as SVG vector graphic",
                                     onclick: {
                                         let mut panel = showing_data_download.to_owned();
                                         move |evt| {
@@ -2036,12 +2351,14 @@ fn DecompositionView(config: Decomposition) -> Element {
                                         }
                                     },
                                     span { class: "decompositions-export-icon",
-                                        Icon { icon: FaShareNodes, width: 16, height: 16, class: "decompositions-icon" }
+                                        Icon { icon: FaVectorSquare, width: 16, height: 16, class: "decompositions-icon" }
                                     }
                                     span { class: "decompositions-export-label", "SVG" }
                                 }
                                 button {
-                                    class: "decompositions-export-btn",
+                                    class: "decompositions-export-btn decompositions-export-btn--csv",
+                                    title: "Download embedding coordinates as a CSV spreadsheet",
+                                    "aria-label": "Download as CSV spreadsheet",
                                     onclick: {
                                         let mut panel = showing_data_download.to_owned();
                                         move |evt| {
@@ -2054,13 +2371,79 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     }
                                     span { class: "decompositions-export-label", "CSV" }
                                 }
+                                button {
+                                    class: "decompositions-export-btn decompositions-export-btn--npy",
+                                    title: "Download embedding coordinates as a NumPy binary array",
+                                    "aria-label": "Download as NumPy array",
+                                    onclick: {
+                                        let mut panel = showing_data_download.to_owned();
+                                        move |evt| {
+                                            panel.set(false);
+                                            export_npy(evt);
+                                        }
+                                    },
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaCube, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "NPY" }
+                                }
+                                button {
+                                    class: "decompositions-export-btn decompositions-export-btn--parquet",
+                                    title: "Download embedding as a Parquet table",
+                                    "aria-label": "Download as Parquet table",
+                                    onclick: {
+                                        let mut panel = showing_data_download.to_owned();
+                                        move |evt| {
+                                            panel.set(false);
+                                            export_parquet(evt);
+                                        }
+                                    },
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaDatabase, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "Parquet" }
+                                }
+                                button {
+                                    class: "decompositions-export-btn decompositions-export-btn--arrow",
+                                    title: "Download embedding as an Arrow IPC file",
+                                    "aria-label": "Download as Arrow IPC file",
+                                    onclick: {
+                                        let mut panel = showing_data_download.to_owned();
+                                        move |evt| {
+                                            panel.set(false);
+                                            export_arrow(evt);
+                                        }
+                                    },
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaBolt, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "Arrow" }
+                                }
+                                if recorded_url.read().is_some() {
+                                    button {
+                                        class: "decompositions-export-btn decompositions-export-btn--webm",
+                                        title: "Download the recorded animation as a WebM video",
+                                        "aria-label": "Download as WebM video",
+                                        onclick: {
+                                            let mut panel = showing_data_download.to_owned();
+                                            move |evt| {
+                                                panel.set(false);
+                                                download_video(evt);
+                                            }
+                                        },
+                                        span { class: "decompositions-export-icon",
+                                            Icon { icon: FaVideo, width: 16, height: 16, class: "decompositions-icon" }
+                                        }
+                                        span { class: "decompositions-export-label", "WEBM" }
+                                    }
+                                }
                             }
                         } else {
                             div { class: "decompositions-panel-content",
                                 if !(busy() && (recording_active() || recording_armed())) {
                                     button {
                                         id: "play",
-                                        class: "decompositions-iconbtn decompositions-tp-play",
+                                        class: if !busy() && embedding.read().is_none() && dataset.read().is_some() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--attention" } else { "decompositions-iconbtn decompositions-tp-play" },
                                         title: if busy() { "Pause" } else { "Play" },
                                         "aria-label": if busy() { "Pause" } else { "Play" },
                                         onclick: toggle_play,
@@ -2111,16 +2494,6 @@ fn DecompositionView(config: Decomposition) -> Element {
                                             class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
                                             style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
                                         }
-                                    }
-                                }
-                                if recorded_url.read().is_some() && !recording_active() {
-                                    button {
-                                        id: "download-video",
-                                        class: "decompositions-iconbtn decompositions-tp-snap",
-                                        title: "Download the recorded video",
-                                        "aria-label": "Download the recorded video",
-                                        onclick: download_video,
-                                        Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
                                     }
                                 }
                                 if !busy() {
