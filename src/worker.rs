@@ -6,6 +6,7 @@ use send_wrapper::SendWrapper;
 use crate::compute::{TsneCache, decompose_cached};
 use crate::ingest::parse_file;
 use crate::messages::{DecompositionMethod, TsnePhase, WorkerRequest, WorkerResponse};
+use crate::plot::build_svg;
 
 /// Smallest gap between streamed snapshot frames, capping the live preview to
 /// about 30 fps. Snapshots are gated by epoch count upstream, but a small
@@ -95,6 +96,55 @@ impl Worker for DecompositionWorker {
                     &method,
                     &mut self.cache,
                 );
+            }
+            WorkerRequest::ExportSvg {
+                points,
+                colors,
+                markers,
+                highlight,
+                legend,
+            } => {
+                let n = points.len() / 2;
+                if n == 0 {
+                    scope.respond(
+                        id,
+                        WorkerResponse::Error {
+                            message: "Empty embedding cannot be exported".to_string(),
+                        },
+                    );
+                    return;
+                }
+
+                // SVG size: square, scaled to data size but capped for
+                // reasonable file sizes.
+                let size = (n as u32).clamp(800, 4096);
+
+                let export_scope = scope.clone();
+                let result = build_svg(
+                    &points,
+                    &colors,
+                    &markers,
+                    highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
+                    &legend,
+                    size,
+                    move |fraction| {
+                        export_scope.respond(id, WorkerResponse::SvgProgress { fraction });
+                    },
+                );
+
+                match result {
+                    Some(svg) => {
+                        scope.respond(id, WorkerResponse::SvgReady { svg });
+                    }
+                    None => {
+                        scope.respond(
+                            id,
+                            WorkerResponse::Error {
+                                message: "Failed to build SVG".to_string(),
+                            },
+                        );
+                    }
+                }
             }
         }
     }

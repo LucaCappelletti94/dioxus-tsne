@@ -79,6 +79,7 @@ web-sys = { version = "0.3", features = [
     "HtmlAnchorElement",
     "HtmlCanvasElement",
     "HtmlSelectElement",
+    "KeyboardEvent",
     "MediaQueryList",
     "MediaRecorder",
     "MediaRecorderOptions",

@@ -5,6 +5,8 @@
 //! marker shape by distinct value, so classes differ by shape as well as by
 //! color). Recoloring is a pure redraw, the embedding is never recomputed.
 
+use serde::{Deserialize, Serialize};
+
 /// The matplotlib tab10 palette, cycled when there are more categories.
 const PALETTE: [&str; 10] = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
@@ -37,7 +39,7 @@ const LEVELS: usize = 64;
 const MAX_INTEGER_CATEGORIES: usize = 10;
 
 /// How a set of values was mapped to colors.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorScale {
     /// Distinct values mapped to a palette.
     Categorical,
@@ -48,7 +50,7 @@ pub enum ColorScale {
 /// The marker shape of a point, cycled per category so classes differ by
 /// shape as well as by color. With the 10 color palette the (color, marker)
 /// pairs stay distinct for 30 categories.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Marker {
     /// A filled circle, also the shape of every continuous scale point.
     #[default]
@@ -90,7 +92,7 @@ impl Marker {
 }
 
 /// One legend entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegendEntry {
     /// Human readable label.
     pub label: String,

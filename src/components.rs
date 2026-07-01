@@ -19,10 +19,10 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBan, FaCalculator, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload, FaExpand,
-    FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaInfinity, FaPalette,
-    FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTag,
-    FaTrashCan, FaTriangleExclamation, FaVideo, FaXmark,
+    FaBan, FaCalculator, FaChevronLeft, FaCircleNodes, FaCircleQuestion, FaCompress, FaDownload, FaExpand,
+    FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaPalette,
+    FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt, FaSliders, FaSpinner, FaTag, FaTable,
+    FaTriangleExclamation, FaVideo, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -31,10 +31,6 @@ use wasm_bindgen::closure::Closure;
 /// Longest legend rendered before truncation.
 const MAX_LEGEND_ENTRIES: usize = 20;
 
-/// Epoch budget for an "infinite" run: large enough to feel endless, but still
-/// finite (a fit cannot be interrupted mid-run, so a truly unbounded value could
-/// never stop).
-const INFINITE_EPOCHS: usize = 500_000;
 
 /// "thread" or "threads", to read naturally next to a pool size in the status.
 fn thread_word(threads: usize) -> &'static str {
@@ -234,7 +230,6 @@ fn auto_learning_rate(n_samples: usize) -> f32 {
 // hovering it.
 const HELP_PERPLEXITY: &str = "Roughly how many close neighbors each point pays attention to. Smaller makes tight local clumps, larger spreads things out. 5 to 50 is typical.";
 const HELP_EPOCHS: &str = "How many refinement steps to run. More steps polish the layout further but take longer. 1000 is a good default, a few hundred is often enough.";
-const HELP_INFINITE: &str = "Keep iterating with no fixed limit until you press pause, so you can watch the layout evolve indefinitely. The epoch count above is ignored.";
 const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
 const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 30 by default, a typical range is 30 to 50, 2 or more.";
 const HELP_COLUMNS: &str = "What each column does. Feature: fed into t-SNE. Label: kept out of t-SNE and offered as a color (numeric labels become a heatmap). Ignore: dropped entirely.";
@@ -247,7 +242,6 @@ const HELP_COLOR_BY: &str =
     "Color the points by one of the dataset's label columns to see where each group lands.";
 const HELP_SETTINGS: &str = "Advanced t-SNE settings.";
 const HELP_RECORD: &str = "Record the scatter plot animation as a WebM video. Toggle while a run is active to capture the embedding evolving.";
-const HELP_CLEAR: &str = "Clear the dataset and result, returning to the start.";
 const HELP_LEGEND_EXPORT: &str = "Bake the color legend into the downloaded snapshot. It gets its own strip and the points are framed beside it, so the legend never covers them.";
 
 // Status-line tooltips: short explanations so a newcomer can learn the terms by
@@ -283,6 +277,9 @@ fn spawn_bridge(
     color_source: Signal<String>,
     run_info: Signal<Option<RunInfo>>,
     sheet_state: Signal<SheetState>,
+    svg_exporting: Signal<bool>,
+    svg_export_fraction: Signal<f32>,
+    svg_export_data: Signal<Option<String>>,
 ) -> WorkerBridge<DecompositionWorker> {
     DecompositionWorker::spawner()
         // The URL points at a loader module that initializes the wasm-bindgen
@@ -298,6 +295,9 @@ fn spawn_bridge(
             let mut color_source = color_source;
             let mut run_info = run_info;
             let mut sheet_state = sheet_state;
+            let mut svg_exporting = svg_exporting;
+            let mut svg_export_fraction = svg_export_fraction;
+            let mut svg_export_data = svg_export_data;
             match response {
                 WorkerResponse::Loaded {
                     dataset: parsed,
@@ -376,6 +376,14 @@ fn spawn_bridge(
                 WorkerResponse::Error { message } => {
                     status.set(format!("error: {message}"));
                     run_info.set(None);
+                }
+                WorkerResponse::SvgProgress { fraction } => {
+                    svg_exporting.set(true);
+                    svg_export_fraction.set(fraction);
+                }
+                WorkerResponse::SvgReady { svg } => {
+                    svg_export_data.set(Some(svg));
+                    svg_exporting.set(false);
                 }
             }
         })
@@ -719,11 +727,15 @@ fn DecompositionView(config: Decomposition) -> Element {
     let mut pca_dims = use_signal(|| defaults.pca_dims);
     let mut perplexity = use_signal(|| defaults.perplexity);
     let mut epochs = use_signal(|| defaults.epochs);
-    // Run without a fixed epoch budget: the fit keeps iterating until the user
-    // pauses it. Implemented as a huge epoch count the run never reaches.
-    let mut infinite = use_signal(|| false);
     // Bake the color legend into the downloaded snapshot (a reserved strip).
     let mut legend_in_export = use_signal(|| false);
+    // True when the transport bar shows the download panel (PNG, SVG, CSV).
+    let showing_data_download = use_signal(|| false);
+    // SVG export state: driven by the worker callback, consumed by the progress
+    // bar and a download effect.
+    let svg_exporting = use_signal(|| false);
+    let svg_export_fraction = use_signal(|| 0.0f32);
+    let svg_export_data = use_signal(|| None::<String>);
     let mut learning_rate = use_signal(|| defaults.learning_rate);
     let mut early_exaggeration = use_signal(|| defaults.early_exaggeration);
     let mut exaggeration_epochs = use_signal(|| defaults.early_exaggeration_epochs);
@@ -759,11 +771,7 @@ fn DecompositionView(config: Decomposition) -> Element {
     let build_method = move || -> DecompositionMethod {
         DecompositionMethod::Tsne(TsneParams {
             perplexity: perplexity(),
-            epochs: if infinite() {
-                INFINITE_EPOCHS
-            } else {
-                epochs()
-            },
+            epochs: epochs(),
             learning_rate: learning_rate(),
             pca_dims: pca_dims(),
             early_exaggeration: early_exaggeration(),
@@ -844,16 +852,14 @@ fn DecompositionView(config: Decomposition) -> Element {
     // determinate against the epoch budget. Everything else (idle, done,
     // paused, error) hides the bar.
     let progress = use_memo(move || -> Option<(bool, f32)> {
-        let status = status.read();
-        if matches!(status.as_str(), "running" | "loading") {
+        // SVG export progress takes priority: shows a determinate bar while
+        // the worker builds the SVG string.
+        if svg_exporting() {
+            Some((false, svg_export_fraction()))
+        } else if matches!(status.read().as_str(), "running" | "loading") {
             Some((true, 0.0))
-        } else if status.starts_with("epoch ") && infinite() {
-            // No fixed budget, so the bar stays indeterminate while it runs.
-            Some((true, 0.0))
-        } else if let Some(rest) = status.strip_prefix("epoch ") {
+        } else if let Some(rest) = status.read().strip_prefix("epoch ") {
             let total = epochs().max(1) as f32;
-            // The status carries a trailing elapsed time, "epoch N (1.2s)", so
-            // take the leading token for the epoch index.
             let epoch = rest
                 .split_whitespace()
                 .next()
@@ -862,6 +868,38 @@ fn DecompositionView(config: Decomposition) -> Element {
             Some((false, (epoch / total).clamp(0.0, 1.0)))
         } else {
             None
+        }
+    });
+    // Download the SVG when the worker finishes building it. The effect fires
+    // when `svg_export_data` transitions from `None` to `Some`, creates a blob
+    // URL, triggers the download, and clears the signal so the effect is ready
+    // for the next export.
+    let mut export_data_for_download = svg_export_data;
+    use_effect(move || {
+        let Some(svg) = export_data_for_download.read().clone() else {
+            return;
+        };
+        export_data_for_download.set(None);
+
+        if let Some(window) = web_sys::window() {
+            let bytes = js_sys::Uint8Array::from(svg.as_bytes());
+            let options = web_sys::BlobPropertyBag::new();
+            options.set_type("image/svg+xml");
+            let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
+                &js_sys::Array::of1(&bytes.into()),
+                &options,
+            );
+            if let Ok(blob) = blob
+                && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+                && let Some(document) = window.document()
+                && let Ok(anchor_el) = document.create_element("a")
+                && let Ok(anchor) = anchor_el.dyn_into::<web_sys::HtmlAnchorElement>()
+            {
+                anchor.set_href(&url);
+                anchor.set_download("tsne.svg");
+                anchor.click();
+                let _ = web_sys::Url::revoke_object_url(&url);
+            }
         }
     });
     let can_drag = use_memo(move || embedding.read().is_some());
@@ -883,6 +921,9 @@ fn DecompositionView(config: Decomposition) -> Element {
             color_source,
             run_info,
             sheet_state,
+            svg_exporting,
+            svg_export_fraction,
+            svg_export_data,
         )))
     });
 
@@ -978,6 +1019,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                     color_source,
                     run_info,
                     sheet_state,
+                    svg_exporting,
+                    svg_export_fraction,
+                    svg_export_data,
                 );
             }
             // Retain a spreadsheet's bytes so the picker can re-parse another
@@ -1060,11 +1104,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             };
             let selected = DecompositionMethod::Tsne(TsneParams {
                 perplexity: perplexity(),
-                epochs: if infinite() {
-                    INFINITE_EPOCHS
-                } else {
-                    epochs()
-                },
+                epochs: epochs(),
                 learning_rate: learning_rate(),
                 pca_dims: pca_dims(),
                 early_exaggeration: early_exaggeration(),
@@ -1101,6 +1141,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                     color_source,
                     run_info,
                     sheet_state,
+                    svg_exporting,
+                    svg_export_fraction,
+                    svg_export_data,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1141,6 +1184,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                     color_source,
                     run_info,
                     sheet_state,
+                    svg_exporting,
+                    svg_export_fraction,
+                    svg_export_data,
                 );
             }
             // Stop and discard any recording, armed or finished.
@@ -1362,6 +1408,139 @@ fn DecompositionView(config: Decomposition) -> Element {
         }
     };
 
+    // Export the current embedding as an SVG string via the worker.
+    let mut export_svg = {
+        let bridge = bridge.clone();
+        let embedding = embedding.to_owned();
+        let colors = colors.to_owned();
+        let markers = markers.to_owned();
+        let highlight = highlight.to_owned();
+        let coloring_result = coloring_result.to_owned();
+        let legend_in_export = legend_in_export.to_owned();
+        let mut svg_exporting = svg_exporting.to_owned();
+        move |_| {
+            let points = match &*embedding.read() {
+                Some(p) => p.clone(),
+                None => return,
+            };
+            let colors_data = colors.read().clone().unwrap_or_default();
+            let markers_data = markers.read().clone().unwrap_or_default();
+            let highlight_data = highlight.read().clone();
+            let legend = legend_in_export()
+                .then(|| coloring_result.read().as_ref().map(|c| c.legend.clone()))
+                .flatten()
+                .unwrap_or_default();
+
+            let markers_vec: Vec<u8> = markers_data
+                .iter()
+                .map(|m| match m {
+                    crate::Marker::Circle => 0,
+                    crate::Marker::Triangle => 1,
+                    crate::Marker::Square => 2,
+                    crate::Marker::Diamond => 3,
+                    crate::Marker::Plus => 4,
+                    crate::Marker::TriangleDown => 5,
+                })
+                .collect();
+            let highlight_tuple = highlight_data.as_ref().map(|(c, m)| {
+                (
+                    c.clone(),
+                    match m {
+                        crate::Marker::Circle => 0,
+                        crate::Marker::Triangle => 1,
+                        crate::Marker::Square => 2,
+                        crate::Marker::Diamond => 3,
+                        crate::Marker::Plus => 4,
+                        crate::Marker::TriangleDown => 5,
+                    },
+                )
+            });
+
+            svg_exporting.set(false);
+            bridge.borrow().send(WorkerRequest::ExportSvg {
+                points,
+                colors: colors_data,
+                markers: markers_vec,
+                highlight: highlight_tuple,
+                legend,
+            });
+        }
+    };
+
+    // Export the current embedding coordinates as a CSV file.
+    let export_csv = {
+        let embedding = embedding.to_owned();
+        let dataset = dataset.to_owned();
+        let color_source = color_source.to_owned();
+        move |_| {
+            use std::fmt::Write;
+
+            let Some(points) = &*embedding.read() else {
+                return;
+            };
+            let n = points.len() / 2;
+
+            // Determine if a label column is active.
+            let label_values: Option<Vec<String>> = if color_source() != "none" {
+                let source = color_source();
+                if let Some(col_name) = source.strip_prefix("column:") {
+                    let dataset_data = dataset.read();
+                    if let Some(ds) = &*dataset_data {
+                        ds.label_columns
+                            .iter()
+                            .find(|lc| lc.name == col_name)
+                            .map(|lc| lc.values.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let mut csv = String::from("tsne_x,tsne_y");
+            if label_values.is_some() {
+                csv.push_str(",label");
+            }
+            csv.push('\n');
+
+            for i in 0..n {
+                let x = points[i * 2];
+                let y = points[i * 2 + 1];
+                if let Some(ref labels) = label_values {
+                    let label = labels.get(i).map(|s| s.as_str()).unwrap_or("");
+                    let _ = write!(csv, "{x},{y},{label}");
+                } else {
+                    let _ = write!(csv, "{x},{y}");
+                }
+                csv.push('\n');
+            }
+
+            if let Some(window) = web_sys::window() {
+                let bytes = js_sys::Uint8Array::from(csv.as_bytes());
+                let options = web_sys::BlobPropertyBag::new();
+                options.set_type("text/csv");
+                let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
+                    &js_sys::Array::of1(&bytes.into()),
+                    &options,
+                );
+                if let Ok(blob) = blob
+                    && let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob)
+                    && let Some(document) = window.document()
+                    && let Ok(anchor_el) = document.create_element("a")
+                    && let Ok(anchor) = anchor_el.dyn_into::<web_sys::HtmlAnchorElement>()
+                {
+                    anchor.set_href(&url);
+                    anchor.set_download("tsne.csv");
+                    anchor.click();
+                    let _ = web_sys::Url::revoke_object_url(&url);
+                }
+            }
+        }
+    };
+
     // Transport controls (media-player style). Pause freezes a running fit by
     // orphaning its worker (it self-closes after its current run) and installing
     // a fresh idle one, so Play can warm-start from the frozen layout.
@@ -1380,6 +1559,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                     color_source,
                     run_info,
                     sheet_state,
+                    svg_exporting,
+                    svg_export_fraction,
+                    svg_export_data,
                 );
                 let mut status = status;
                 status.set(String::from("paused"));
@@ -1442,6 +1624,48 @@ fn DecompositionView(config: Decomposition) -> Element {
             }
         }
     };
+
+    // Keyboard shortcuts: Escape clears the dataset, Space toggles play/pause.
+    use_hook(move || {
+        let clear = clear.clone();
+        let toggle_play = {
+            let play = play.clone();
+            let pause = pause.clone();
+            move || {
+                if busy() {
+                    pause();
+                } else {
+                    play();
+                }
+            }
+        };
+        let dataset = dataset.clone();
+        let handler = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+                return;
+            };
+            let key = keyboard.key();
+            match key.as_str() {
+                "Escape" => {
+                    keyboard.prevent_default();
+                    clear(());
+                }
+                " " => {
+                    if dataset.read().is_some() {
+                        keyboard.prevent_default();
+                        toggle_play();
+                    }
+                }
+                _ => {}
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = web_sys::window()
+            .and_then(|win| {
+                win.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
+                    .ok()
+            });
+        handler.forget();
+    });
 
     let drop_enabled = drop_zone.is_some();
     let drop_prompt = drop_zone
@@ -1548,7 +1772,8 @@ fn DecompositionView(config: Decomposition) -> Element {
 
             // Color legend overlay (keeps data colors). For categorical scales
             // the entries focus their class on hover and pin it on click.
-            if let Some(active) = coloring_result.read().as_ref() {
+            if embedding.read().is_some() {
+                if let Some(active) = coloring_result.read().as_ref() {
                 {
                     let interactive = active.scale == ColorScale::Categorical;
                     // Above the marker limit the plot draws dots, not shapes, so
@@ -1602,6 +1827,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                         }
                     }
                 }
+            }
             }
 
             // Top bar: brand/logo on the left, settings gear on the right.
@@ -1780,100 +2006,137 @@ fn DecompositionView(config: Decomposition) -> Element {
                 div {
                     class: if embedding.read().is_none() && !busy() { "decompositions-transport decompositions-transport--centered" } else { "decompositions-transport" },
                     div { class: "decompositions-transport-row",
-                        // Play/Pause: hidden while a recording run is in flight,
-                        // when the rec/stop button is the only control.
-                        if !(busy() && (recording_active() || recording_armed())) {
-                            button {
-                                id: "play",
-                                class: "decompositions-iconbtn decompositions-tp-play",
-                                title: if busy() { "Pause" } else { "Play" },
-                                "aria-label": if busy() { "Pause" } else { "Play" },
-                                onclick: toggle_play,
-                                if busy() {
-                                    Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
-                                } else {
-                                    Icon { icon: FaPlay, width: 15, height: 15, class: "decompositions-icon" }
+                        if showing_data_download() {
+                            div { class: "decompositions-panel-content",
+                                button {
+                                    class: "decompositions-iconbtn decompositions-tp-back",
+                                    title: "Back to controls",
+                                    "aria-label": "Back to controls",
+                                    onclick: move |_| {
+                                        let mut panel = showing_data_download;
+                                        panel.set(false);
+                                    },
+                                    Icon { icon: FaChevronLeft, width: 14, height: 14, class: "decompositions-icon" }
+                                }
+                                button {
+                                    class: "decompositions-export-btn",
+                                    onclick: download_image,
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaImage, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "PNG" }
+                                }
+                                button {
+                                    class: "decompositions-export-btn",
+                                    onclick: {
+                                        let mut panel = showing_data_download.to_owned();
+                                        move |evt| {
+                                            panel.set(false);
+                                            export_svg(evt);
+                                        }
+                                    },
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaShareNodes, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "SVG" }
+                                }
+                                button {
+                                    class: "decompositions-export-btn",
+                                    onclick: {
+                                        let mut panel = showing_data_download.to_owned();
+                                        move |evt| {
+                                            panel.set(false);
+                                            export_csv(evt);
+                                        }
+                                    },
+                                    span { class: "decompositions-export-icon",
+                                        Icon { icon: FaTable, width: 16, height: 16, class: "decompositions-icon" }
+                                    }
+                                    span { class: "decompositions-export-label", "CSV" }
                                 }
                             }
-                        }
-                        // Restart (run from scratch): only once a run has
-                        // happened at least once and is now stopped.
-                        if !busy() && embedding.read().is_some() {
-                            button {
-                                id: "restart",
-                                class: "decompositions-iconbtn decompositions-tp-restart",
-                                title: HELP_RUN,
-                                "aria-label": HELP_RUN,
-                                onclick: restart,
-                                Icon { icon: FaRotateLeft, width: 14, height: 14, class: "decompositions-icon" }
-                            }
-                        }
-                        // Rec: start a recording run while stopped, or stop it
-                        // while recording. Hidden during a normal run.
-                        if recording_supported() && (!busy() || recording_active() || recording_armed()) {
-                            button {
-                                id: "record",
-                                class: if recording_active() || recording_armed() { "decompositions-iconbtn decompositions-tp-rec decompositions-rec--active" } else { "decompositions-iconbtn decompositions-tp-rec" },
-                                title: HELP_RECORD,
-                                "aria-label": HELP_RECORD,
-                                onclick: rec_toggle,
-                                Icon { icon: FaVideo, width: 15, height: 15, class: "decompositions-icon" }
-                            }
-                        }
-                        // Snapshot the current frame as a PNG. Available whenever
-                        // there is a frame to capture, running or stopped.
-                        if embedding.read().is_some() {
-                            button {
-                                id: "snapshot",
-                                class: "decompositions-iconbtn decompositions-tp-snap",
-                                title: "Download a PNG of the current frame",
-                                "aria-label": "Download a PNG of the current frame",
-                                onclick: download_image,
-                                Icon { icon: FaImage, width: 14, height: 14, class: "decompositions-icon" }
-                            }
-                        }
-                        // Loading bar: contracts away when no run is in flight.
-                        div {
-                            class: if progress().is_some() { "decompositions-scrubber decompositions-scrubber--active" } else { "decompositions-scrubber" },
-                            if let Some((indeterminate, fraction)) = progress() {
+                        } else {
+                            div { class: "decompositions-panel-content",
+                                if !(busy() && (recording_active() || recording_armed())) {
+                                    button {
+                                        id: "play",
+                                        class: "decompositions-iconbtn decompositions-tp-play",
+                                        title: if busy() { "Pause" } else { "Play" },
+                                        "aria-label": if busy() { "Pause" } else { "Play" },
+                                        onclick: toggle_play,
+                                        if busy() {
+                                            Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
+                                        } else {
+                                            Icon { icon: FaPlay, width: 15, height: 15, class: "decompositions-icon" }
+                                        }
+                                    }
+                                }
+                                if !busy() && embedding.read().is_some() {
+                                    button {
+                                        id: "restart",
+                                        class: "decompositions-iconbtn decompositions-tp-restart",
+                                        title: HELP_RUN,
+                                        "aria-label": HELP_RUN,
+                                        onclick: restart,
+                                        Icon { icon: FaRotateLeft, width: 14, height: 14, class: "decompositions-icon" }
+                                    }
+                                }
+                                if recording_supported() && (!busy() || recording_active() || recording_armed()) {
+                                    button {
+                                        id: "record",
+                                        class: if recording_active() || recording_armed() { "decompositions-iconbtn decompositions-tp-rec decompositions-rec--active" } else { "decompositions-iconbtn decompositions-tp-rec" },
+                                        title: HELP_RECORD,
+                                        "aria-label": HELP_RECORD,
+                                        onclick: rec_toggle,
+                                        Icon { icon: FaVideo, width: 15, height: 15, class: "decompositions-icon" }
+                                    }
+                                }
+                                if !busy() && embedding.read().is_some() {
+                                    button {
+                                        id: "download-data",
+                                        class: "decompositions-iconbtn decompositions-tp-download",
+                                        title: "Download",
+                                        "aria-label": "Download",
+                                        onclick: move |_| {
+                                            let mut panel = showing_data_download;
+                                            panel.set(true);
+                                        },
+                                        Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                                    }
+                                }
                                 div {
-                                    class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
-                                    style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                                    class: if progress().is_some() { "decompositions-scrubber decompositions-scrubber--active" } else { "decompositions-scrubber" },
+                                    if let Some((indeterminate, fraction)) = progress() {
+                                        div {
+                                            class: if indeterminate { "decompositions-scrubber-fill decompositions-scrubber-fill--indeterminate" } else { "decompositions-scrubber-fill" },
+                                            style: if indeterminate { String::new() } else { format!("width: {}%;", fraction * 100.0) },
+                                        }
+                                    }
+                                }
+                                if recorded_url.read().is_some() && !recording_active() {
+                                    button {
+                                        id: "download-video",
+                                        class: "decompositions-iconbtn decompositions-tp-snap",
+                                        title: "Download the recorded video",
+                                        "aria-label": "Download the recorded video",
+                                        onclick: download_video,
+                                        Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
+                                    }
+                                }
+                                if !busy() {
+                                    button {
+                                        id: "settings",
+                                        class: "decompositions-iconbtn decompositions-tp-settings",
+                                        title: HELP_SETTINGS,
+                                        "aria-label": HELP_SETTINGS,
+                                        onclick: move |_| {
+                                            let mut settings_open = settings_open;
+                                            settings_open.set(!settings_open());
+                                        },
+                                        Icon { icon: FaSliders, width: 14, height: 14, class: "decompositions-icon" }
+                                    }
                                 }
                             }
-                        }
-                        if recorded_url.read().is_some() && !recording_active() {
-                            button {
-                                id: "download-video",
-                                class: "decompositions-iconbtn decompositions-tp-snap",
-                                title: "Download the recorded video",
-                                "aria-label": "Download the recorded video",
-                                onclick: download_video,
-                                Icon { icon: FaDownload, width: 14, height: 14, class: "decompositions-icon" }
-                            }
-                        }
-                        // Settings only matter between runs (params are captured
-                        // when a run starts), so the gear is hidden while busy.
-                        if !busy() {
-                            button {
-                                id: "settings",
-                                class: "decompositions-iconbtn decompositions-tp-settings",
-                                title: HELP_SETTINGS,
-                                "aria-label": HELP_SETTINGS,
-                                onclick: move |_| {
-                                    let mut settings_open = settings_open;
-                                    settings_open.set(!settings_open());
-                                },
-                                Icon { icon: FaSliders, width: 14, height: 14, class: "decompositions-icon" }
-                            }
-                        }
-                        button {
-                            id: "clear",
-                            class: "decompositions-iconbtn decompositions-tp-clear",
-                            title: HELP_CLEAR,
-                            "aria-label": HELP_CLEAR,
-                            onclick: clear,
-                            Icon { icon: FaTrashCan, width: 14, height: 14, class: "decompositions-icon" }
                         }
                     }
                     // Second line: the live status, each part hover-explained so a
@@ -1883,7 +2146,6 @@ fn DecompositionView(config: Decomposition) -> Element {
                         let info = *run_info.read();
                         let current_phase = *phase.read();
                         let total = epochs();
-                        let is_infinite = infinite();
                         if let Some(error) = status_str.strip_prefix("error: ") {
                             rsx! {
                                 div { class: "decompositions-statusline decompositions-statusline--error",
@@ -1894,7 +2156,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                         } else {
                             match info {
                                 Some(RunInfo::Running { epoch, elapsed_s, threads }) => {
-                                    let epoch_text = if is_infinite { format!("epoch {epoch}") } else { format!("epoch {epoch}/{total}") };
+                                    let epoch_text = format!("epoch {epoch}/{total}");
                                     rsx! {
                                         div { class: "decompositions-statusline",
                                             if let Some(ph) = current_phase {
@@ -1978,24 +2240,11 @@ fn DecompositionView(config: Decomposition) -> Element {
                             min: "1",
                             step: "50",
                             value: "{epochs}",
-                            disabled: infinite(),
                             onchange: move |evt| {
                                 if let Ok(value) = evt.value().parse::<usize>() {
                                     epochs.set(value.max(1));
                                 }
                             },
-                        }
-                    }
-                    label { class: "decompositions-field", r#for: "infinite", title: HELP_INFINITE, "aria-label": HELP_INFINITE,
-                        span { class: "decompositions-field-label",
-                            Icon { icon: FaInfinity, width: 14, height: 14, class: "decompositions-icon" }
-                            "Run forever"
-                        }
-                        input {
-                            id: "infinite",
-                            r#type: "checkbox",
-                            checked: infinite(),
-                            onchange: move |evt| infinite.set(evt.checked()),
                         }
                     }
                     label { class: "decompositions-field", r#for: "learning-rate", title: HELP_LEARNING_RATE, "aria-label": HELP_LEARNING_RATE,

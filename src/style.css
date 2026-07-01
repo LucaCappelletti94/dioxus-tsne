@@ -220,7 +220,6 @@ a.decompositions-iconbtn {
     background: var(--ddx-panel);
     border: 1px solid var(--ddx-line);
     border-radius: 1.3rem;
-    box-shadow: 0 6px 24px rgba(10, 10, 10, 0.12);
     z-index: 4;
     max-width: calc(100vw - 2rem);
     animation: decompositions-fade-in 0.3s ease;
@@ -278,6 +277,9 @@ a.decompositions-iconbtn {
 /* The settings gear has no accent color, just a subtle dim on hover. */
 .decompositions-tp-settings:hover:not(:disabled) {
     opacity: 0.6;
+}
+.decompositions-tp-download:hover:not(:disabled) {
+    color: #0891b2;
 }
 
 /* While recording, the REC control is unmistakably live: solid red and
@@ -580,6 +582,7 @@ a.decompositions-iconbtn {
     align-items: center;
     justify-content: space-between;
     gap: 0.6rem;
+    min-height: 2rem;
     font-size: 0.83rem;
     color: var(--ddx-muted);
 }
@@ -614,6 +617,7 @@ a.decompositions-iconbtn {
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
+    min-height: 8rem;
     max-height: 14rem;
     overflow-y: auto;
     border: 1px solid var(--ddx-line);
@@ -626,7 +630,10 @@ a.decompositions-iconbtn {
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
+    padding: 0.35rem 0.25rem;
+    min-height: 2.2rem;
     font-size: 0.8rem;
+    line-height: 1.4;
 }
 
 /* Left side of a column row: the role icon plus the (ellipsized) name. */
@@ -647,6 +654,7 @@ a.decompositions-iconbtn {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    line-height: 1.4;
 }
 
 .decompositions-column-row select {
@@ -656,7 +664,8 @@ a.decompositions-iconbtn {
     background: transparent;
     border: 1px solid var(--ddx-line);
     border-radius: 5px;
-    padding: 0.15rem 0.3rem;
+    padding: 0.3rem 0.3rem;
+    min-height: 1.8rem;
 }
 
 /* Sheet picker: full-width select above the column list for multi-sheet
@@ -780,4 +789,52 @@ a.decompositions-iconbtn {
 .decompositions-about-close:hover {
     background: var(--ddx-hover);
     color: var(--ddx-ink);
+}
+/* Panel content: smooth fade+slide on every mount. */
+.decompositions-panel-content {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    animation: ddx-panel-in 0.25s ease both;
+}
+
+@keyframes ddx-panel-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Export panel buttons. */
+.decompositions-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    font: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border: 1px solid var(--ddx-line);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ddx-ink);
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.decompositions-export-btn:hover {
+    background: var(--ddx-hover);
+}
+
+.decompositions-export-icon {
+    display: inline-flex;
+    align-items: center;
+}
+
+.decompositions-export-label {
+    white-space: nowrap;
 }

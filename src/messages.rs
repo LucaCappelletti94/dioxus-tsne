@@ -1,8 +1,8 @@
 //! Messages exchanged between the UI components and the decomposition worker.
 
-use serde::{Deserialize, Serialize};
-
+use crate::color::LegendEntry;
 use crate::ingest::Dataset;
+use serde::{Deserialize, Serialize};
 
 /// Which phase of a t-SNE run is currently executing, reported to the UI so the
 /// status line and progress bar can name what the worker is doing.
@@ -128,6 +128,21 @@ pub enum WorkerRequest {
         /// The decomposition to run, with its parameters.
         method: DecompositionMethod,
     },
+    /// Render the current embedding as an SVG string for download.
+    ExportSvg {
+        /// Row major embedding, `n_samples * 2` long.
+        points: Vec<f32>,
+        /// Per-point CSS colors, or empty for uniform color.
+        colors: Vec<String>,
+        /// Per-point marker index (0=Circle .. 5=TriangleDown), or empty for
+        /// all circles.
+        markers: Vec<u8>,
+        /// Focused legend entry color and marker index, or `None` for no
+        /// highlight.
+        highlight: Option<(String, u8)>,
+        /// Legend entries to render in the sidebar, empty for no legend.
+        legend: Vec<LegendEntry>,
+    },
 }
 
 /// Response sent from the decomposition worker back to the UI.
@@ -187,5 +202,15 @@ pub enum WorkerResponse {
     Error {
         /// Human readable reason.
         message: String,
+    },
+    /// SVG export progress, 0.0 to 1.0.
+    SvgProgress {
+        /// Fraction of points rendered so far.
+        fraction: f32,
+    },
+    /// SVG export completed, the full markup string.
+    SvgReady {
+        /// Complete SVG markup.
+        svg: String,
     },
 }

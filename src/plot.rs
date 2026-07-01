@@ -56,7 +56,7 @@ impl Transform {
     /// the first epochs of a run) do not blow up the viewport and squish the
     /// rest into a ball. Stragglers simply clip off-screen until they settle, a
     /// settled embedding has none and is fit in full.
-    fn fit(points: &[f32], width: f32, height: f32, margin: f32) -> Option<Self> {
+    pub(crate) fn fit(points: &[f32], width: f32, height: f32, margin: f32) -> Option<Self> {
         if points.len() < 2 {
             return None;
         }
@@ -115,7 +115,7 @@ impl Transform {
     }
 
     /// Maps a data-space point to canvas pixels.
-    fn project(&self, x: f32, y: f32) -> (f32, f32) {
+    pub(crate) fn project(&self, x: f32, y: f32) -> (f32, f32) {
         (
             self.width / 2.0 + (x - self.center_x) * self.scale,
             self.height / 2.0 + (y - self.center_y) * self.scale,
@@ -495,6 +495,400 @@ pub(crate) fn snapshot_png(
         &canvas, points, colors, markers, highlight, size, size, ratio, None, false, legend,
     )?;
     canvas.to_data_url_with_type("image/png").ok()
+}
+
+/// Renders the embedding to an SVG string for download.
+///
+/// Pure string building: no DOM, so it can run in a web worker.
+/// `size` is the square viewport side in logical pixels.
+/// `progress` is called with a fraction (0.0 to 1.0) after each batch is
+/// rendered, so the caller can drive a progress bar.
+pub(crate) fn build_svg(
+    points: &[f32],
+    colors: &[String],
+    markers: &[u8],
+    highlight: Option<(&str, u8)>,
+    legend: &[LegendEntry],
+    size: u32,
+    mut progress: impl FnMut(f32),
+) -> Option<String> {
+    use std::fmt::Write;
+
+    let n = points.len() / 2;
+    if n == 0 {
+        return None;
+    }
+
+    // Compute transform and project all points.
+    let transform = Transform::fit(points, size as f32, size as f32, MARGIN)?;
+    let pixels: Vec<(f32, f32)> = points
+        .chunks_exact(2)
+        .map(|p| transform.project(p[0], p[1]))
+        .collect();
+
+    // Resolve per-point (color, marker).
+    let effective_colors: Vec<&str> = (0..n)
+        .map(|i| colors.get(i).map(|s| s.as_str()).unwrap_or(DEFAULT_COLOR))
+        .collect();
+    let effective_markers: Vec<u8> = (0..n)
+        .map(|i| markers.get(i).copied().unwrap_or(0))
+        .collect();
+
+    // Apply highlight dimming.
+    let final_colors: Vec<&str> = effective_colors
+        .iter()
+        .zip(effective_markers.iter())
+        .map(|(c, m)| match highlight {
+            Some((hc, hm)) if *c != hc || *m != hm => DIMMED_COLOR,
+            _ => *c,
+        })
+        .collect();
+
+    // Batch by (color, marker).
+    let mut batches: Vec<(&str, u8, Vec<usize>)> = Vec::new();
+    for index in 0..n {
+        let color = final_colors[index];
+        let marker = effective_markers[index];
+        match batches
+            .iter_mut()
+            .find(|(c, m, _)| *c == color && *m == marker)
+        {
+            Some((_, _, indices)) => indices.push(index),
+            None => batches.push((color, marker, vec![index])),
+        }
+    }
+
+    // Greyed points first so the highlighted class paints on top.
+    if highlight.is_some() {
+        batches.sort_by_key(|(color, _, _)| *color != DIMMED_COLOR);
+    }
+
+    let use_simple = n > SHAPED_MARKER_LIMIT;
+    let mut buf = String::new();
+
+    // SVG header.
+    let _ = write!(
+        buf,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">"#,
+    );
+
+    // Render batches.
+    let total_batches = batches.len();
+    for (batch_i, (color, marker, indices)) in batches.iter().enumerate() {
+        if use_simple {
+            // Simple squares for large point counts.
+            let half = 1.0; // 2x2 square centered on point.
+            for &index in indices {
+                let (x, y) = pixels[index];
+                let _ = write!(
+                    buf,
+                    r#"<rect x="{:.2}" y="{:.2}" width="2" height="2" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    x - half,
+                    y - half,
+                    escape_attr(color),
+                    FILL_ALPHA,
+                    escape_attr(color),
+                );
+            }
+        } else {
+            // Shaped markers.
+            let radius = 3.0;
+            for &index in indices {
+                let (x, y) = pixels[index];
+                let escaped_color = escape_attr(color);
+                match marker {
+                    0 => {
+                        // Circle.
+                        let _ = write!(
+                            buf,
+                            r#"<circle cx="{:.2}" cy="{:.2}" r="{radius}" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x, y, escaped_color, FILL_ALPHA, escaped_color,
+                        );
+                    }
+                    1 => {
+                        // Triangle up.
+                        let _ = write!(
+                            buf,
+                            r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x,
+                            y - radius,
+                            x + 0.866 * radius,
+                            y + 0.5 * radius,
+                            x - 0.866 * radius,
+                            y + 0.5 * radius,
+                            escaped_color,
+                            FILL_ALPHA,
+                            escaped_color,
+                        );
+                    }
+                    2 => {
+                        // Square.
+                        let _ = write!(
+                            buf,
+                            r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x - radius,
+                            y - radius,
+                            2.0 * radius,
+                            2.0 * radius,
+                            escaped_color,
+                            FILL_ALPHA,
+                            escaped_color,
+                        );
+                    }
+                    3 => {
+                        // Diamond.
+                        let _ = write!(
+                            buf,
+                            r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x,
+                            y - radius,
+                            x + radius,
+                            y,
+                            x,
+                            y + radius,
+                            x - radius,
+                            y,
+                            escaped_color,
+                            FILL_ALPHA,
+                            escaped_color,
+                        );
+                    }
+                    4 => {
+                        // Plus.
+                        let arm = 0.4 * radius;
+                        let _ = write!(
+                            buf,
+                            r#"<path d="M{:.2},{:.2} h{:.2} v{:.2} h-{:.2} Z M{:.2},{:.2} h{:.2} v{:.2} h-{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x - radius,
+                            y - arm,
+                            2.0 * radius,
+                            2.0 * arm,
+                            2.0 * radius,
+                            x - arm,
+                            y - radius,
+                            2.0 * arm,
+                            2.0 * radius,
+                            2.0 * arm,
+                            escaped_color,
+                            FILL_ALPHA,
+                            escaped_color,
+                        );
+                    }
+                    5 => {
+                        // Triangle down.
+                        let _ = write!(
+                            buf,
+                            r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x,
+                            y + radius,
+                            x + 0.866 * radius,
+                            y - 0.5 * radius,
+                            x - 0.866 * radius,
+                            y - 0.5 * radius,
+                            escaped_color,
+                            FILL_ALPHA,
+                            escaped_color,
+                        );
+                    }
+                    _ => {
+                        // Fallback to circle.
+                        let _ = write!(
+                            buf,
+                            r#"<circle cx="{:.2}" cy="{:.2}" r="{radius}" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                            x, y, escaped_color, FILL_ALPHA, escaped_color,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Report progress after each batch.
+        progress((batch_i as f32 + 1.0) / total_batches as f32);
+    }
+
+    // Legend sidebar.
+    if !legend.is_empty() {
+        build_legend_svg(&mut buf, legend, size, use_simple);
+    }
+
+    let _ = write!(buf, "</svg>");
+    Some(buf)
+}
+
+/// Escapes a string for use as an SVG attribute value.
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Appends the legend sidebar SVG elements to the buffer.
+fn build_legend_svg(buf: &mut String, entries: &[LegendEntry], size: u32, uniform_marker: bool) {
+    use std::fmt::Write;
+
+    const SVG_LEGEND_FONT_SIZE: f32 = 13.0;
+    const LEGEND_SEPARATOR: &str = "#dddddd";
+    const LEGEND_TEXT_COLOR: &str = "#1a1a1a";
+
+    let max_rows = ((size as f32 - 2.0 * LEGEND_PAD) / LEGEND_ROW_H).floor() as usize;
+    let max_rows = max_rows.max(1);
+    let (shown, overflow) = if entries.len() > max_rows {
+        (max_rows - 1, entries.len() - (max_rows - 1))
+    } else {
+        (entries.len(), 0)
+    };
+    let rows = shown + usize::from(overflow > 0);
+
+    // Estimate strip width: marker column + padding + approximate text width.
+    let max_label_len = entries
+        .iter()
+        .take(shown)
+        .map(|e| e.label.len())
+        .max()
+        .unwrap_or(0);
+    let approx_text_w = (max_label_len as f32) * (SVG_LEGEND_FONT_SIZE * 0.6);
+    let strip_w = (LEGEND_PAD * 2.0 + LEGEND_MARKER_COL + approx_text_w)
+        .clamp(LEGEND_MIN_WIDTH, (size as f32) * 0.4);
+
+    // Separator line.
+    let _ = write!(
+        buf,
+        r#"<line x1="{:.0}" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="{}" stroke-width="1"/>"#,
+        strip_w,
+        LEGEND_PAD,
+        strip_w,
+        size as f32 - LEGEND_PAD,
+        LEGEND_SEPARATOR,
+    );
+
+    let marker_x = LEGEND_PAD + LEGEND_MARKER_COL / 2.0;
+    let label_x = LEGEND_PAD + LEGEND_MARKER_COL;
+
+    for (i, entry) in entries.iter().take(shown).enumerate() {
+        let y = (size as f32 - rows as f32 * LEGEND_ROW_H) / 2.0
+            + i as f32 * LEGEND_ROW_H
+            + LEGEND_ROW_H / 2.0;
+        let escaped_color = escape_attr(&entry.color);
+        let escaped_label = escape_attr(&entry.label);
+
+        // Marker glyph in the legend.
+        let marker = if uniform_marker {
+            0u8
+        } else {
+            entry.marker as u8
+        };
+        let legend_radius = 5.0;
+        match marker {
+            0 => {
+                let _ = write!(
+                    buf,
+                    r#"<circle cx="{:.2}" cy="{:.2}" r="{legend_radius}" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x, y, escaped_color, FILL_ALPHA, escaped_color,
+                );
+            }
+            1 => {
+                let _ = write!(
+                    buf,
+                    r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x,
+                    y - legend_radius,
+                    marker_x + 0.866 * legend_radius,
+                    y + 0.5 * legend_radius,
+                    marker_x - 0.866 * legend_radius,
+                    y + 0.5 * legend_radius,
+                    escaped_color,
+                    FILL_ALPHA,
+                    escaped_color,
+                );
+            }
+            2 => {
+                let _ = write!(
+                    buf,
+                    r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x - legend_radius,
+                    y - legend_radius,
+                    2.0 * legend_radius,
+                    2.0 * legend_radius,
+                    escaped_color,
+                    FILL_ALPHA,
+                    escaped_color,
+                );
+            }
+            3 => {
+                let _ = write!(
+                    buf,
+                    r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x,
+                    y - legend_radius,
+                    marker_x + legend_radius,
+                    y,
+                    marker_x,
+                    y + legend_radius,
+                    marker_x - legend_radius,
+                    y,
+                    escaped_color,
+                    FILL_ALPHA,
+                    escaped_color,
+                );
+            }
+            4 => {
+                let arm = 0.4 * legend_radius;
+                let _ = write!(
+                    buf,
+                    r#"<path d="M{:.2},{:.2} h{:.2} v{:.2} h-{:.2} Z M{:.2},{:.2} h{:.2} v{:.2} h-{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x - legend_radius,
+                    y - arm,
+                    2.0 * legend_radius,
+                    2.0 * arm,
+                    2.0 * legend_radius,
+                    marker_x - arm,
+                    y - legend_radius,
+                    2.0 * arm,
+                    2.0 * legend_radius,
+                    2.0 * arm,
+                    escaped_color,
+                    FILL_ALPHA,
+                    escaped_color,
+                );
+            }
+            5 => {
+                let _ = write!(
+                    buf,
+                    r#"<path d="M{:.2},{:.2} L{:.2},{:.2} L{:.2},{:.2} Z" fill="{}" fill-opacity="{}" stroke="{}" stroke-width="1"/>"#,
+                    marker_x,
+                    y + legend_radius,
+                    marker_x + 0.866 * legend_radius,
+                    y - 0.5 * legend_radius,
+                    marker_x - 0.866 * legend_radius,
+                    y - 0.5 * legend_radius,
+                    escaped_color,
+                    FILL_ALPHA,
+                    escaped_color,
+                );
+            }
+            _ => {}
+        }
+
+        // Label text.
+        let _ = write!(
+            buf,
+            r#"<text x="{:.2}" y="{:.2}" fill="{}" font-size="{SVG_LEGEND_FONT_SIZE}" font-family="system-ui, -apple-system, sans-serif" dominant-baseline="central">{escaped_label}</text>"#,
+            label_x, y, LEGEND_TEXT_COLOR,
+        );
+    }
+
+    if overflow > 0 {
+        let overflow_y = (size as f32 - rows as f32 * LEGEND_ROW_H) / 2.0
+            + shown as f32 * LEGEND_ROW_H
+            + LEGEND_ROW_H / 2.0;
+        let _ = write!(
+            buf,
+            r#"<text x="{:.2}" y="{:.2}" fill="{}" font-size="{SVG_LEGEND_FONT_SIZE}" font-family="system-ui, -apple-system, sans-serif" dominant-baseline="central">+{overflow} more</text>"#,
+            label_x, overflow_y, LEGEND_TEXT_COLOR,
+        );
+    }
 }
 
 /// In-progress drag of a single point: the pointer that started it, the index
