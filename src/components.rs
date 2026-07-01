@@ -19,10 +19,10 @@ use dioxus::prelude::*;
 use dioxus_free_icons::Icon;
 use dioxus_free_icons::icons::fa_brands_icons::FaGithub;
 use dioxus_free_icons::icons::fa_solid_icons::{
-    FaBan, FaBolt, FaCalculator, FaChevronLeft, FaCircleNodes, FaCircleQuestion, FaCompress, FaDatabase, FaDownload, FaExpand,
-    FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag, FaHeart, FaImage, FaPalette,
-    FaCube, FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShirt, FaSliders, FaSpinner, FaTag, FaTable,
-    FaShareNodes, FaTriangleExclamation, FaVectorSquare, FaVideo, FaXmark,
+    FaBan, FaBolt, FaCalculator, FaChevronLeft, FaCircleNodes, FaCircleQuestion, FaCompress,
+    FaCube, FaDatabase, FaDownload, FaExpand, FaFileArrowUp, FaFire, FaGaugeHigh, FaHashtag,
+    FaHeart, FaImage, FaPalette, FaPause, FaPlay, FaRepeat, FaRotateLeft, FaShareNodes, FaShirt,
+    FaSliders, FaSpinner, FaTable, FaTag, FaTriangleExclamation, FaVectorSquare, FaVideo, FaXmark,
 };
 use gloo_worker::{Spawnable, WorkerBridge};
 use wasm_bindgen::JsCast;
@@ -30,7 +30,6 @@ use wasm_bindgen::closure::Closure;
 
 /// Longest legend rendered before truncation.
 const MAX_LEGEND_ENTRIES: usize = 20;
-
 
 /// "thread" or "threads", to read naturally next to a pool size in the status.
 fn thread_word(threads: usize) -> &'static str {
@@ -674,6 +673,9 @@ impl Decomposition {
 
 /// The component behind [`Decomposition::render`]. Holds all the state and
 /// renders only the pieces enabled in the config.
+// Dioxus RSX `"{var}"` expands to `format!("{}", var)` in the macro output;
+// clippy sees the pre-expansion form and flags it as useless.
+#[allow(clippy::useless_format)]
 #[component]
 fn DecompositionView(config: Decomposition) -> Element {
     let Decomposition {
@@ -1606,9 +1608,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             // Header dict
             buf.extend_from_slice(header.as_bytes());
             // Padding spaces
-            for _ in 0..(padding - 1) {
-                buf.push(b' ');
-            }
+            buf.extend(std::iter::repeat_n(b' ', padding - 1));
             // Trailing newline
             buf.push(b'\n');
             // Data: (N, 2) float32, C-order (row-major).
@@ -1654,19 +1654,20 @@ fn DecompositionView(config: Decomposition) -> Element {
             use arrow_array::{Float32Array, RecordBatch, StringArray};
             use arrow_schema::{DataType, Field, Schema};
 
-            let x_array = Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
-            let y_array = Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+            let x_array =
+                Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+            let y_array =
+                Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
 
             // Determine if a label column is active.
             let label_array: Option<StringArray> = if color_source() != "none" {
                 let source = color_source();
                 if let Some(col_name) = source.strip_prefix("column:") {
                     if let Some(ds) = &*dataset.read() {
-                        if let Some(lc) = ds.label_columns.iter().find(|lc| lc.name == col_name) {
-                            Some(StringArray::from(lc.values.clone()))
-                        } else {
-                            None
-                        }
+                        ds.label_columns
+                            .iter()
+                            .find(|lc| lc.name == col_name)
+                            .map(|lc| StringArray::from(lc.values.clone()))
                     } else {
                         None
                     }
@@ -1702,10 +1703,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             } else {
                 RecordBatch::try_new(
                     std::sync::Arc::new(schema),
-                    vec![
-                        std::sync::Arc::new(x_array),
-                        std::sync::Arc::new(y_array),
-                    ],
+                    vec![std::sync::Arc::new(x_array), std::sync::Arc::new(y_array)],
                 )
             };
 
@@ -1714,8 +1712,8 @@ fn DecompositionView(config: Decomposition) -> Element {
             };
 
             // Write to memory via Cursor.
-            use parquet::file::properties::WriterProperties;
             use parquet::arrow::ArrowWriter;
+            use parquet::file::properties::WriterProperties;
 
             let mut buf = vec![];
             let props = WriterProperties::builder().build();
@@ -1761,18 +1759,19 @@ fn DecompositionView(config: Decomposition) -> Element {
             use arrow_ipc::writer::FileWriter;
             use arrow_schema::{DataType, Field, Schema};
 
-            let x_array = Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
-            let y_array = Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+            let x_array =
+                Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+            let y_array =
+                Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
 
             let label_array: Option<StringArray> = if color_source() != "none" {
                 let source = color_source();
                 if let Some(col_name) = source.strip_prefix("column:") {
                     if let Some(ds) = &*dataset.read() {
-                        if let Some(lc) = ds.label_columns.iter().find(|lc| lc.name == col_name) {
-                            Some(StringArray::from(lc.values.clone()))
-                        } else {
-                            None
-                        }
+                        ds.label_columns
+                            .iter()
+                            .find(|lc| lc.name == col_name)
+                            .map(|lc| StringArray::from(lc.values.clone()))
                     } else {
                         None
                     }
@@ -1808,10 +1807,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             } else {
                 RecordBatch::try_new(
                     std::sync::Arc::new(schema),
-                    vec![
-                        std::sync::Arc::new(x_array),
-                        std::sync::Arc::new(y_array),
-                    ],
+                    vec![std::sync::Arc::new(x_array), std::sync::Arc::new(y_array)],
                 )
             };
 
@@ -1949,7 +1945,6 @@ fn DecompositionView(config: Decomposition) -> Element {
                 }
             }
         };
-        let dataset = dataset.clone();
         let handler = Closure::wrap(Box::new(move |event: web_sys::Event| {
             let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
@@ -1960,20 +1955,17 @@ fn DecompositionView(config: Decomposition) -> Element {
                     keyboard.prevent_default();
                     clear(());
                 }
-                " " => {
-                    if dataset.read().is_some() {
-                        keyboard.prevent_default();
-                        toggle_play();
-                    }
+                " " if dataset.read().is_some() => {
+                    keyboard.prevent_default();
+                    toggle_play();
                 }
                 _ => {}
             }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = web_sys::window()
-            .and_then(|win| {
-                win.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
-                    .ok()
-            });
+        let _ = web_sys::window().and_then(|win| {
+            win.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
+                .ok()
+        });
         handler.forget();
     });
 
@@ -2097,11 +2089,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                             onclick: move |evt| evt.stop_propagation(),
                             for (index, entry) in active.legend.iter().take(MAX_LEGEND_ENTRIES).enumerate() {
                                 span {
-                                    class: if interactive && legend_pinned() == Some(index) {
-                                        "decompositions-legend-entry decompositions-legend-entry--pinned"
-                                    } else {
-                                        "decompositions-legend-entry"
-                                    },
+                                    class: if interactive && legend_pinned() == Some(index) { "decompositions-legend-entry decompositions-legend-entry--pinned" } else { "decompositions-legend-entry" },
                                     onmouseenter: move |_| {
                                         if interactive {
                                             let mut legend_hovered = legend_hovered;
@@ -2186,11 +2174,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 // After a run finishes, a few elegant red pulses
                                 // nudge the user toward the sponsor link. The
                                 // pause and pulse count are pure CSS.
-                                class: if matches!(*run_info.read(), Some(RunInfo::Done { .. })) {
-                                    "decompositions-iconbtn decompositions-heartbtn decompositions-heart-attention"
-                                } else {
-                                    "decompositions-iconbtn decompositions-heartbtn"
-                                },
+                                class: if matches!(*run_info.read(), Some(RunInfo::Done { .. })) { "decompositions-iconbtn decompositions-heartbtn decompositions-heart-attention" } else { "decompositions-iconbtn decompositions-heartbtn" },
                                 href: "{support_url}",
                                 target: "_blank",
                                 rel: "noopener",
