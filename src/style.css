@@ -197,6 +197,7 @@ a.decompositions-iconbtn {
    gently in green to invite the user to begin. */
 .decompositions-tp-play--attention {
     animation: decompositions-play-pulse 1.4s ease-in-out 0.5s 3;
+    animation-fill-mode: none;
     transform-origin: center;
 }
 
