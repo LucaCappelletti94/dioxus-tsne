@@ -2866,7 +2866,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                             "aria-live": "polite",
                             Icon { icon: FaTriangleExclamation, width: 13, height: 13, class: "decompositions-icon" }
                             span {
-                                "You moved a point by hand. Dragging does not correct or refine the embedding, it overrides it. Press Play to let the optimizer re-fit from the new arrangement."
+                                "Point moved. Play to re-fit from here."
                             }
                         }
                     }

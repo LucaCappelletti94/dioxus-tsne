@@ -1094,23 +1094,19 @@ a.decompositions-iconbtn {
     color: #ea580c;
 }
 
-/* Warning banner sitting between the commands and the status line. Small,
-   pill-shaped, orange, with the warning icon left of the text. Fades in so
-   it does not jolt the layout on drop. */
+/* Post-drag reminder sitting between the commands and the status line.
+   Plain orange text with the warning icon left of it (no pill, no border)
+   so it reads as a subtle note rather than an error state. Fades in so it
+   does not jolt the layout on drop. */
 .decompositions-modified-banner {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.35rem;
     justify-content: center;
-    padding: 0.35rem 0.7rem;
-    margin: 0.25rem auto 0;
-    max-width: min(46rem, 100%);
+    margin: 0.1rem 0 0;
     font-size: 0.82rem;
     line-height: 1.3;
     color: #ea580c;
-    background: rgba(234, 88, 12, 0.14);
-    border: 1px solid rgba(234, 88, 12, 0.45);
-    border-radius: 0.6rem;
     animation: decompositions-modified-banner-in 0.35s ease-out both;
 }
 
