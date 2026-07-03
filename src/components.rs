@@ -13,7 +13,10 @@ use crate::color::{ColorScale, Coloring, Marker, colorize};
 use crate::ingest::{Dataset, LabelColumn};
 use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest, WorkerResponse};
 use crate::plot::ScatterPlot;
-use crate::plot3d::ScatterPlot3D;
+use crate::plot3d::{
+    Camera, HeldAxes, KEY_ROT_PER_TICK, KEY_TICK_MS, RotationAxis, ScatterPlot3D,
+    project_to_display,
+};
 use crate::worker::DecompositionWorker;
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
@@ -31,6 +34,12 @@ use wasm_bindgen::closure::Closure;
 
 /// Longest legend rendered before truncation.
 const MAX_LEGEND_ENTRIES: usize = 20;
+
+/// How long the Dimension toggle's error state (red border + inline message)
+/// stays visible after the user asks to display a higher dimensionality
+/// than the current embedding carries. Cleared automatically after this,
+/// or reset by a fresh error before the timer elapses.
+const DIM_ERROR_TIMEOUT_MS: u32 = 10_000;
 
 /// "thread" or "threads", to read naturally next to a pool size in the status.
 fn thread_word(threads: usize) -> &'static str {
@@ -730,6 +739,20 @@ fn DecompositionView(config: Decomposition) -> Element {
     let mut pca_dims = use_signal(|| defaults.pca_dims);
     let mut perplexity = use_signal(|| defaults.perplexity);
     let mut dimension = use_signal(|| defaults.dimension);
+    // Display dimensionality: what the plot renders as, independent of
+    // `dimension` (which is the target for the *next* run). The toggle
+    // synchronizes both; the digit keys `2`/`3`/`4` only steer this one, so
+    // the user can peek at a lower-D projection of a higher-D embedding
+    // without disturbing the fit. Kicks off at the same default and stays
+    // in lock-step until the user chooses otherwise.
+    let mut display_dim = use_signal(|| defaults.dimension);
+    // Transient error banner shown on the toggle whenever the requested
+    // display exceeds the current embedding's row width (e.g. asking for
+    // 4-D of a 3-D run). Cleared after `DIM_ERROR_TIMEOUT_MS`.
+    let mut dim_error = use_signal(|| None::<String>);
+    // Generation counter so a fresh error resets the auto-clear window
+    // instead of the previous timer clearing the newer message early.
+    let dim_error_gen = use_signal(|| 0u64);
     let mut epochs = use_signal(|| defaults.epochs);
     // Bake the color legend into the downloaded snapshot (a reserved strip).
     let mut legend_in_export = use_signal(|| false);
@@ -795,6 +818,140 @@ fn DecompositionView(config: Decomposition) -> Element {
         if let Some(select) = color_select() {
             select.set_value(&source);
         }
+    });
+
+    // Row width of the currently loaded embedding, derived from its total
+    // length and the loaded dataset's row count. `None` until both are set
+    // in agreement. The memo compares by value, so successive snapshots of
+    // the same run do not re-fire the display-dim auto-sync below.
+    let embedding_row_dim = use_memo(move || -> Option<usize> {
+        let emb = embedding.read();
+        let ds = dataset.read();
+        let points = emb.as_ref()?;
+        let ds = ds.as_ref()?;
+        if ds.n_samples == 0 || points.is_empty() || points.len() % ds.n_samples != 0 {
+            return None;
+        }
+        Some(points.len() / ds.n_samples)
+    });
+
+    // Snap the display dimensionality to whatever the fresh embedding
+    // actually carries. Only re-fires when the row width changes, so a
+    // user's keyboard-driven preview (`2`/`3`/`4` while running) survives
+    // subsequent snapshots at the same row width.
+    use_effect(move || {
+        if let Some(dim) = embedding_row_dim() {
+            display_dim.set(dim);
+            // A fresh embedding invalidates any stale "cannot display Nd"
+            // message: either the new run answers the previous ask, or the
+            // user gets a clean starting slate.
+            dim_error.set(None);
+        }
+    });
+
+    // Point set actually handed to the plot: the raw embedding truncated to
+    // `display_dim` per row (row width unchanged when `display_dim` matches
+    // the embedding, or the first `display_dim` coordinates kept when it is
+    // smaller). Returns `None` when the embedding is missing, the row width
+    // is unknown, or the requested display exceeds what the embedding
+    // carries (the toggle refuses that combination through
+    // `try_set_display_dim`, but the plot must degrade gracefully if the
+    // effect races ahead of the guard).
+    // Shared camera state (rotation, zoom, pan) owned by the parent so
+    // the rotation the user set up in 3-D mode remains visible when the
+    // display drops to 2-D, and vice versa. `ScatterPlot3D` writes into
+    // this signal from its drag / key handlers; the 2-D and 3-D
+    // projection memos read from it.
+    let camera = use_signal(Camera::default);
+
+    // Rotation-key state: which of `X`/`Y`/`Z`/`W` is currently held. The
+    // ticker below reads it and advances the camera in place, so the
+    // rotation stays live in 2-D display too (the 2-D scatter has no
+    // focusable canvas of its own to hang key handlers off).
+    let held_axes = use_signal(HeldAxes::default);
+
+    // 60 Hz key-driven rotation ticker. Runs for the lifetime of the
+    // decomposition view, so pressing `X`/`Y`/`Z`/`W` rotates the camera
+    // regardless of which scatter is mounted, and the projection follows.
+    use_hook(move || {
+        spawn(async move {
+            let mut camera = camera;
+            let held_axes = held_axes;
+            loop {
+                gloo_timers::future::TimeoutFuture::new(KEY_TICK_MS).await;
+                let axes = held_axes();
+                if !axes.any() {
+                    continue;
+                }
+                let mut cam = camera();
+                if axes.x {
+                    cam.rot_x += KEY_ROT_PER_TICK;
+                }
+                if axes.y {
+                    cam.rot_y += KEY_ROT_PER_TICK;
+                }
+                if axes.z {
+                    cam.rot_z += KEY_ROT_PER_TICK;
+                }
+                if axes.w {
+                    cam.rot_w += KEY_ROT_PER_TICK;
+                }
+                camera.set(cam);
+            }
+        });
+    });
+
+    let display_embedding: ReadSignal<Option<Vec<f32>>> = use_memo(move || -> Option<Vec<f32>> {
+        let dd = display_dim();
+        let ed = embedding_row_dim()?;
+        if dd > ed {
+            return None;
+        }
+        let cam = camera();
+        let emb = embedding.read();
+        let points = emb.as_ref()?;
+        project_to_display(points, ed, dd, cam)
+    })
+    .into();
+
+    // Attempts to change the display dimensionality. On success the toggle
+    // and plot re-render at the new dim. On failure (`requested > embedding
+    // row width`) it flashes the toggle red and posts an error banner that
+    // clears itself after `DIM_ERROR_TIMEOUT_MS`. Wrapping in `Rc` so both
+    // the toggle click handlers and the global keydown handler can call it
+    // without cloning the state closures separately.
+    let try_set_display_dim: Rc<dyn Fn(usize)> = Rc::new(move |requested: usize| {
+        if !(2..=4).contains(&requested) {
+            return;
+        }
+        // Signals are `Copy` handles, so rebinding them here as mutable
+        // locals gives us `.set` access from inside the `Fn` closure
+        // without demanding `FnMut`.
+        let mut display_dim = display_dim;
+        let mut dim_error = dim_error;
+        let mut dim_error_gen = dim_error_gen;
+        let allow = match embedding_row_dim() {
+            Some(ed) => requested <= ed,
+            None => true,
+        };
+        if allow {
+            display_dim.set(requested);
+            dim_error.set(None);
+            return;
+        }
+        let current = embedding_row_dim().unwrap_or(0);
+        let generation = dim_error_gen() + 1;
+        dim_error_gen.set(generation);
+        dim_error.set(Some(format!(
+            "Cannot display {requested}D: the current embedding is {current}D. Run a new {requested}D fit first."
+        )));
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(DIM_ERROR_TIMEOUT_MS).await;
+            // Clear only if no newer error has replaced this one.
+            if dim_error_gen() == generation {
+                dim_error.set(None);
+            }
+        });
     });
 
     // The active coloring, recomputed on source or dataset changes. Recoloring
@@ -1936,7 +2093,14 @@ fn DecompositionView(config: Decomposition) -> Element {
         }
     };
 
-    // Keyboard shortcuts: Escape clears the dataset, Space toggles play/pause.
+    // Keyboard shortcuts. Escape clears the dataset, Space toggles play /
+    // pause, the digit keys `2`/`3`/`4` switch the display dimensionality
+    // (validated against the embedding, error-flashing the toggle on a
+    // dimension it cannot show). The `X`/`Y`/`Z`/`W` keys drive the
+    // rotation ticker on the shared `camera` signal, and are wired at
+    // window scope so they work in every display mode (including the 2-D
+    // scatter, which has no focusable canvas of its own).
+    let display_dim_from_key = try_set_display_dim.clone();
     use_hook(move || {
         let clear = clear.clone();
         let toggle_play = {
@@ -1950,7 +2114,13 @@ fn DecompositionView(config: Decomposition) -> Element {
                 }
             }
         };
-        let handler = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Rotation-key handlers share the `held_axes` signal with the
+        // ticker via three separate closures (keydown, keyup, blur), each
+        // rebinding the signal as mutable so its `with_mut` call works
+        // through the outer `FnMut` closure signature.
+        let display_dim_from_key = display_dim_from_key.clone();
+        let mut held_axes_kd = held_axes;
+        let keydown = Closure::wrap(Box::new(move |event: web_sys::Event| {
             let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
             };
@@ -1959,19 +2129,78 @@ fn DecompositionView(config: Decomposition) -> Element {
                 "Escape" => {
                     keyboard.prevent_default();
                     clear(());
+                    return;
                 }
                 " " if dataset.read().is_some() => {
                     keyboard.prevent_default();
                     toggle_play();
+                    return;
+                }
+                "2" | "3" | "4" => {
+                    keyboard.prevent_default();
+                    if let Ok(dim) = key.parse::<usize>() {
+                        display_dim_from_key(dim);
+                    }
+                    return;
                 }
                 _ => {}
             }
+            // Axis-rotation keys. Physical `Code` (not layout `Key`) so
+            // dvorak / azerty land on the same row of keys, and the OS
+            // key-repeat replays are ignored (the ticker already spins as
+            // long as the flag is set).
+            if keyboard.repeat() {
+                return;
+            }
+            let axis = match keyboard.code().as_str() {
+                "KeyX" => Some(RotationAxis::X),
+                "KeyY" => Some(RotationAxis::Y),
+                "KeyZ" => Some(RotationAxis::Z),
+                "KeyW" => Some(RotationAxis::W),
+                _ => None,
+            };
+            if let Some(axis) = axis {
+                keyboard.prevent_default();
+                held_axes_kd.with_mut(|a| a.set(axis, true));
+            }
         }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = web_sys::window().and_then(|win| {
-            win.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref())
-                .ok()
-        });
-        handler.forget();
+
+        let mut held_axes_ku = held_axes;
+        let keyup = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
+                return;
+            };
+            let axis = match keyboard.code().as_str() {
+                "KeyX" => Some(RotationAxis::X),
+                "KeyY" => Some(RotationAxis::Y),
+                "KeyZ" => Some(RotationAxis::Z),
+                "KeyW" => Some(RotationAxis::W),
+                _ => None,
+            };
+            if let Some(axis) = axis {
+                held_axes_ku.with_mut(|a| a.set(axis, false));
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+
+        // Window blur: focus loss (Alt-Tab, dev-tools popping open, click
+        // in another window) never delivers keyup, so held keys would
+        // strand the ticker into an infinite spin. Reset every axis flag
+        // on blur to keep the state in sync with what the fingers are
+        // actually doing.
+        let mut held_axes_blur = held_axes;
+        let blur = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            held_axes_blur.set(HeldAxes::default());
+        }) as Box<dyn FnMut(web_sys::Event)>);
+
+        if let Some(win) = web_sys::window() {
+            let _ =
+                win.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+            let _ = win.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref());
+            let _ = win.add_event_listener_with_callback("blur", blur.as_ref().unchecked_ref());
+        }
+        keydown.forget();
+        keyup.forget();
+        blur.forget();
     });
 
     let drop_enabled = drop_zone.is_some();
@@ -2062,20 +2291,20 @@ fn DecompositionView(config: Decomposition) -> Element {
 
             // Full-bleed plot.
             div { class: "decompositions-plot-area",
-                if dimension() >= 3 {
+                if display_dim() >= 3 {
                     ScatterPlot3D {
-                        embedding,
+                        embedding: display_embedding,
+                        camera,
                         colors: Some(colors.into()),
                         markers: Some(markers.into()),
                         highlight: Some(highlight.into()),
-                        dimension: dimension(),
                         width: viewport().0,
                         height: viewport().1,
                         pixel_ratio,
                     }
                 } else {
                     ScatterPlot {
-                        embedding,
+                        embedding: display_embedding,
                         colors: Some(colors.into()),
                         markers: Some(markers.into()),
                         highlight: Some(highlight.into()),
@@ -2604,18 +2833,21 @@ fn DecompositionView(config: Decomposition) -> Element {
                             },
                         }
                     }
-                    div { class: "decompositions-field", title: HELP_DIMENSION,
+                    div {
+                        class: if dim_error.read().is_some() { "decompositions-field decompositions-field--error" } else { "decompositions-field" },
+                        title: HELP_DIMENSION,
                         span { class: "decompositions-field-label",
                             Icon { icon: FaCube, width: 14, height: 14, class: "decompositions-icon" }
                             "Dimension"
                         }
                         div {
-                            class: "decompositions-toggle",
+                            class: if dim_error.read().is_some() { "decompositions-toggle decompositions-toggle--error" } else { "decompositions-toggle" },
                             role: "radiogroup",
                             "aria-label": "Dimension",
                             for value in [2usize, 3, 4] {
                                 {
                                     let active = dimension() == value;
+                                    let try_set = try_set_display_dim.clone();
                                     rsx! {
                                         button {
                                             key: "{value}",
@@ -2623,12 +2855,22 @@ fn DecompositionView(config: Decomposition) -> Element {
                                             class: if active { "decompositions-toggle-option decompositions-toggle-option--active" } else { "decompositions-toggle-option" },
                                             role: "radio",
                                             "aria-checked": if active { "true" } else { "false" },
-                                            onclick: move |_| dimension.set(value),
+                                            onclick: move |_| {
+                                                dimension.set(value);
+                                                try_set(value);
+                                            },
                                             "{value}D"
                                         }
                                     }
                                 }
                             }
+                        }
+                    }
+                    if let Some(message) = dim_error.read().as_ref() {
+                        p {
+                            class: "decompositions-dim-error",
+                            role: "alert",
+                            "{message}"
                         }
                     }
                     label { class: "decompositions-field", r#for: "epochs", title: HELP_EPOCHS, "aria-label": HELP_EPOCHS,

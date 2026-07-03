@@ -750,6 +750,41 @@ a.decompositions-iconbtn {
     cursor: default;
 }
 
+/* Error state for the Dimension toggle: red border and a tinted background,
+   with a brief opening flash so the change is not silent, kept legible in
+   both light and dark themes by using a fixed color and mixing the fill
+   with alpha instead of relying on `--ddx-*` tokens. Applied while
+   `dim_error` is set (~10 seconds after an illegal display request). */
+.decompositions-field--error {
+    color: #b62525;
+}
+
+.decompositions-toggle--error {
+    border-color: #d64545;
+    background: rgba(214, 69, 69, 0.12);
+    animation: decompositions-dim-error-flash 0.55s ease-out;
+}
+
+@keyframes decompositions-dim-error-flash {
+    0% {
+        background: rgba(214, 69, 69, 0.45);
+        box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.35);
+    }
+    100% {
+        background: rgba(214, 69, 69, 0.12);
+        box-shadow: 0 0 0 0 rgba(214, 69, 69, 0);
+    }
+}
+
+/* Inline error banner sitting under the Dimension toggle, kept off the
+   grid the toggle field itself lives on. */
+.decompositions-dim-error {
+    margin: 0.35rem 0 0.15rem;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: #b62525;
+}
+
 /* In-app "About t-SNE" overlay, animated in over the plot. */
 .decompositions-about-backdrop {
     position: absolute;

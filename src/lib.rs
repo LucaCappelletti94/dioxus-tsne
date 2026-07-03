@@ -74,5 +74,5 @@ pub use ingest::{Dataset, IngestError, LabelColumn, ParsedFile, parse_dataset, p
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
 pub use pca::{PcaResult, pca};
 pub use plot::ScatterPlot;
-pub use plot3d::ScatterPlot3D;
+pub use plot3d::{Camera, ScatterPlot3D, project_to_display};
 pub use worker::DecompositionWorker;

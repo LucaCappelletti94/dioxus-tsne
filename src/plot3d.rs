@@ -109,12 +109,12 @@ const ZOOM_PER_WHEEL: f32 = 0.001;
 /// Interval (milliseconds) between key-driven rotation increments. About 60
 /// Hz, matches the browser's typical rAF cadence closely enough that the
 /// motion looks smooth without the closure churn a full rAF loop would need.
-const KEY_TICK_MS: u32 = 16;
+pub(crate) const KEY_TICK_MS: u32 = 16;
 
 /// Radians the camera rotates per tick while a keyboard axis is held. Tuned
 /// so a full 2*PI turn takes roughly 1.7 s, slow enough to read every angle
 /// but fast enough to feel like the world is spinning under the key.
-const KEY_ROT_PER_TICK: f32 = 0.06;
+pub(crate) const KEY_ROT_PER_TICK: f32 = 0.06;
 
 /// Fallback extent when the embedding is too small to bound. The value only
 /// matters for the framing distance and is scaled by `zoom` immediately.
@@ -127,33 +127,30 @@ const FALLBACK_EXTENT: f32 = 2.0;
 /// the way out and squishing every well-behaved point into sub-pixel dust.
 const OUTLIER_FIT_FACTOR: f32 = 4.0;
 
-/// Orbit-camera state. Kept together so a single signal covers the whole
-/// camera and pointer handlers do not have to shepherd five separate
-/// signals in lock-step.
+/// Orbit-camera state. Held in a signal owned by the parent so the same
+/// rotation persists across dimension switches (see
+/// [`ScatterPlot3D::camera`] and [`project_to_display`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Camera {
-    /// Pitch, radians. Clamped to `[-MAX_PITCH, MAX_PITCH]`.
-    rot_x: f32,
+pub struct Camera {
+    /// Pitch, radians. Clamped to `[-MAX_PITCH, MAX_PITCH]` by the drag
+    /// handler, unclamped by the key ticker.
+    pub rot_x: f32,
     /// Yaw, radians. Unclamped so the user can spin freely.
-    rot_y: f32,
-    /// Roll, radians. Driven by holding the `Z` key (or the `X` and `Y`
-    /// keys combined, which increments this alongside the other axes).
-    /// Unclamped, same reasoning as `rot_y`.
-    rot_z: f32,
-    /// 4-D rotation angle in the ZW plane, radians. Only exercised when
-    /// the parent hands this component a 4-D embedding (`dimension = 4`).
-    /// Driven by holding the `W` key; each tick the ZW rotation matrix
-    /// applied to `(z, w)` is
-    /// `[[cos rot_w, sin rot_w], [-sin rot_w, cos rot_w]]`, so the visible
-    /// `z` becomes `cos * z + sin * w` and `w` is dropped afterwards. In
-    /// 3-D mode this angle is ignored and never touched.
-    rot_w: f32,
+    pub rot_y: f32,
+    /// Roll, radians. Driven by holding the `Z` key.
+    pub rot_z: f32,
+    /// 4-D rotation angle in the ZW plane, radians. Driven by holding the
+    /// `W` key. Consumed both here (when [`ScatterPlot3D`] is mounted with
+    /// a 4-D embedding at `display_dim = 4`) and by
+    /// [`project_to_display`] on the CPU when the parent projects a 4-D
+    /// embedding down to 3-D or 2-D.
+    pub rot_w: f32,
     /// Distance multiplier applied to the data extent, so the framing
     /// stays scale-independent as the embedding grows over epochs.
-    zoom: f32,
+    pub zoom: f32,
     /// View-space pan.
-    pan_x: f32,
-    pan_y: f32,
+    pub pan_x: f32,
+    pub pan_y: f32,
 }
 
 impl Default for Camera {
@@ -202,13 +199,13 @@ struct Drag {
 
 /// Which rotation axis one keydown maps to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RotationAxis {
+pub(crate) enum RotationAxis {
     X,
     Y,
     Z,
     /// The 4-D rotation the `W` key drives, in the ZW plane. Only
-    /// affects the visible embedding when the parent hands this
-    /// component a 4-D point set (`dimension = 4`).
+    /// affects the visible embedding when the parent projects a 4-D
+    /// point set with [`project_to_display`].
     W,
 }
 
@@ -217,40 +214,25 @@ enum RotationAxis {
 /// increments straightforwardly, matching the "hold two at once inclines
 /// the rotation" behavior called out in the UX spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct HeldAxes {
-    x: bool,
-    y: bool,
-    z: bool,
-    /// Reads as `false` in 3-D mode, since the `W` handler is only
-    /// mounted alongside a 4-D embedding.
-    w: bool,
+pub(crate) struct HeldAxes {
+    pub x: bool,
+    pub y: bool,
+    pub z: bool,
+    pub w: bool,
 }
 
 impl HeldAxes {
-    const fn any(self) -> bool {
+    pub(crate) const fn any(self) -> bool {
         self.x || self.y || self.z || self.w
     }
 
-    fn set(&mut self, axis: RotationAxis, value: bool) {
+    pub(crate) fn set(&mut self, axis: RotationAxis, value: bool) {
         match axis {
             RotationAxis::X => self.x = value,
             RotationAxis::Y => self.y = value,
             RotationAxis::Z => self.z = value,
             RotationAxis::W => self.w = value,
         }
-    }
-}
-
-/// Maps a physical key code to the axis it drives, or `None` for keys
-/// this widget ignores. Uses `Code` (physical position) rather than
-/// `Key` (character) so the binding survives non-QWERTY layouts and shift.
-fn key_axis(code: Code) -> Option<RotationAxis> {
-    match code {
-        Code::KeyX => Some(RotationAxis::X),
-        Code::KeyY => Some(RotationAxis::Y),
-        Code::KeyZ => Some(RotationAxis::Z),
-        Code::KeyW => Some(RotationAxis::W),
-        _ => None,
     }
 }
 
@@ -669,29 +651,86 @@ fn data_extent(points: &[f32]) -> f32 {
     (dx * dx + dy * dy + dz * dz).sqrt().max(f32::EPSILON)
 }
 
-/// Projects a row-major `n * 4` embedding down to a row-major `n * 3`
-/// vector by rotating each point in the ZW plane by `rot_w` and dropping
-/// the resulting `w`.
+/// Rotation-only 3-D transform (column-major 4x4 with an identity
+/// translation column). Composes `Ry(rot_y) * Rx(rot_x) * Rz(rot_z)` from
+/// the same axis rotation factors [`view_matrix`] uses, so the CPU-side
+/// projection here matches whatever the shader would do for the same
+/// camera. `rot_w`, `zoom`, `pan_*` are untouched.
+fn rotation_matrix(camera: Camera) -> [f32; 16] {
+    mat4_mul(
+        &rotation_y(camera.rot_y),
+        &mat4_mul(&rotation_x(camera.rot_x), &rotation_z(camera.rot_z)),
+    )
+}
+
+/// Projects a row-major `n * embedding_dim` embedding down to a row-major
+/// `n * display_dim` embedding, applying the rotations `camera` describes.
 ///
-/// The rotation matrix is
-/// `[[cos rot_w, sin rot_w], [-sin rot_w, cos rot_w]]` applied to
-/// `(z, w)`, so `rot_w = 0` degenerates to plain axis dropping (visible
-/// z stays z, w discarded) and `rot_w = PI / 2` swaps them (visible z
-/// becomes w, x and y untouched).
+/// The pipeline is:
 ///
-/// Runs on the CPU because the redraw effect already recomputes on every
-/// camera change; the O(n) here is negligible next to the GL upload
-/// bandwidth even for the 70 k bundled MNIST example.
-fn project_4d_to_3d(points: &[f32], rot_w: f32) -> Vec<f32> {
-    let cw = rot_w.cos();
-    let sw = rot_w.sin();
-    let mut out = Vec::with_capacity(points.len() / 4 * 3);
-    for chunk in points.chunks_exact(4) {
-        out.push(chunk[0]);
-        out.push(chunk[1]);
-        out.push(cw * chunk[2] + sw * chunk[3]);
+/// * If `embedding_dim == 4`, apply the ZW rotation by `rot_w` and drop
+///   the resulting `w`, yielding a 3-vector.
+/// * If the target is 3-D, stop there and return the 3-vectors row-major.
+/// * If the target is 2-D, apply the 3-D rotation
+///   `Ry(rot_y) * Rx(rot_x) * Rz(rot_z)` and take the resulting `(x, y)`.
+///
+/// Returns `None` when the input is empty, not a multiple of
+/// `embedding_dim`, or `display_dim > embedding_dim` (the toggle refuses
+/// that combination, but the projection must degrade gracefully). Pass
+/// through with no work when `display_dim == embedding_dim` and the
+/// embedding is 2-D or 3-D, since neither of those cases uses `camera`.
+/// The 4-D `display_dim == embedding_dim` path DOES apply the ZW rotation
+/// so `rot_w` reads out of the shared camera signal into the visible
+/// 3-vector, matching what [`ScatterPlot3D`] used to compute internally
+/// when it received the raw 4-D embedding.
+pub fn project_to_display(
+    points: &[f32],
+    embedding_dim: usize,
+    display_dim: usize,
+    camera: Camera,
+) -> Option<Vec<f32>> {
+    if embedding_dim == 0
+        || display_dim == 0
+        || display_dim > embedding_dim
+        || !points.len().is_multiple_of(embedding_dim)
+    {
+        return None;
     }
-    out
+    // Trivial: nothing to project.
+    if embedding_dim == display_dim && embedding_dim != 4 {
+        return Some(points.to_vec());
+    }
+
+    let cw = camera.rot_w.cos();
+    let sw = camera.rot_w.sin();
+    let rot3d = rotation_matrix(camera);
+    let n = points.len() / embedding_dim;
+    let mut out = Vec::with_capacity(n * display_dim);
+
+    for chunk in points.chunks_exact(embedding_dim) {
+        // Reduce the row to a 3-vector, applying the ZW rotation on the
+        // way down from 4-D.
+        let (x3, y3, z3) = match embedding_dim {
+            2 => (chunk[0], chunk[1], 0.0),
+            3 => (chunk[0], chunk[1], chunk[2]),
+            _ => (chunk[0], chunk[1], cw * chunk[2] + sw * chunk[3]),
+        };
+
+        match display_dim {
+            2 => {
+                let x_rot = rot3d[0] * x3 + rot3d[4] * y3 + rot3d[8] * z3;
+                let y_rot = rot3d[1] * x3 + rot3d[5] * y3 + rot3d[9] * z3;
+                out.push(x_rot);
+                out.push(y_rot);
+            }
+            _ => {
+                out.push(x3);
+                out.push(y3);
+                out.push(z3);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// Parses `#rrggbb` (case-insensitive, leading `#` optional) into linear
@@ -768,9 +807,15 @@ fn background(dark: bool) -> [f32; 4] {
 ///
 /// # Props
 ///
-/// * `embedding` - the points to draw as a row-major `n * dimension` matrix,
-///   cleared when `None` or when the length is not a multiple of
-///   `dimension`.
+/// * `embedding` - the points to draw as a row-major `n * 3` matrix, cleared
+///   when `None` or when the length is not a multiple of three. The parent
+///   is responsible for projecting higher-D embeddings down to 3-D with
+///   [`project_to_display`] first, using the same `camera` signal, so the
+///   rotation stays consistent across dimensions.
+/// * `camera` - shared rotation and view state. The parent owns the signal
+///   so its rot/zoom/pan state survives dimension switches: this
+///   component's pointer drag and keyboard handlers write into the same
+///   signal that the parent's 2-D and 3-D projection memos read from.
 /// * `colors` - optional CSS `#rrggbb` per point, matched against
 ///   `highlight` (if any) to dim the non-focused class. Fallback color is
 ///   the same shade the 2-D scatter uses.
@@ -779,23 +824,18 @@ fn background(dark: bool) -> [f32; 4] {
 ///   shape sprites would need a second shader path).
 /// * `highlight` - focused legend entry, matched by color only. Points
 ///   whose color does not match get dimmed.
-/// * `dimension` - `3` (the default) or `4`. In 4-D mode the effect
-///   projects each row-major `[x, y, z, w]` down to 3-D by rotating in the
-///   ZW plane by `camera.rot_w` (driven by holding the `W` key) and
-///   dropping the resulting `w`, so the visualization is always 3-D while
-///   the user can spin the 4-th axis into and out of view.
 /// * `width` / `height` - logical canvas size in CSS pixels.
 /// * `pixel_ratio` - backing-buffer resolution multiplier, defaulting to
 ///   the device pixel ratio, clamped to `[1, 4]`.
 #[component]
 pub fn ScatterPlot3D(
     embedding: ReadSignal<Option<Vec<f32>>>,
+    camera: Signal<Camera>,
     #[props(default = None)] colors: Option<ReadSignal<Option<Vec<String>>>>,
     #[props(default = None)] markers: Option<ReadSignal<Option<Vec<Marker>>>>,
     #[props(default = None)] highlight: Option<ReadSignal<Option<(String, Marker)>>>,
     #[props(default = 800)] width: u32,
     #[props(default = 600)] height: u32,
-    #[props(default = 3)] dimension: usize,
     #[props(default = None)] pixel_ratio: Option<f64>,
 ) -> Element {
     // Marker shapes are 2-D only in this crate; the prop is accepted so the
@@ -820,41 +860,7 @@ pub fn ScatterPlot3D(
 
     let mut canvas = use_signal(|| None::<HtmlCanvasElement>);
     let mut renderer = use_signal(|| None::<Renderer>);
-    let mut camera = use_signal(Camera::default);
     let mut drag = use_signal(|| None::<Drag>);
-    let mut held_axes = use_signal(HeldAxes::default);
-
-    // 60 Hz ticker that pushes the held-key rotation into `camera`. Spawned
-    // once per mount; `spawn` binds the task to the component's scope, so it
-    // is auto-aborted when the 3-D scatter unmounts (for example when the
-    // user switches Dimension back to 2). The loop runs unconditionally so
-    // the scheduling stays simple, and short-circuits on the fast path when
-    // no axis is held.
-    use_hook(|| {
-        spawn(async move {
-            loop {
-                gloo_timers::future::TimeoutFuture::new(KEY_TICK_MS).await;
-                let axes = held_axes();
-                if !axes.any() {
-                    continue;
-                }
-                let mut cam = camera();
-                if axes.x {
-                    cam.rot_x += KEY_ROT_PER_TICK;
-                }
-                if axes.y {
-                    cam.rot_y += KEY_ROT_PER_TICK;
-                }
-                if axes.z {
-                    cam.rot_z += KEY_ROT_PER_TICK;
-                }
-                if axes.w {
-                    cam.rot_w += KEY_ROT_PER_TICK;
-                }
-                camera.set(cam);
-            }
-        });
-    });
 
     // Uploads the current embedding and draws one frame. Reactive on the
     // renderer, embedding, colors, highlight, camera and size signals.
@@ -871,33 +877,22 @@ pub fn ScatterPlot3D(
             renderer.clear(buffer_w, buffer_h, bg);
             return;
         };
-        if dimension != 3 && dimension != 4 {
+        if points.len() < 3 || points.len() % 3 != 0 {
             renderer.clear(buffer_w, buffer_h, bg);
             return;
         }
-        if points.len() < dimension || points.len() % dimension != 0 {
-            renderer.clear(buffer_w, buffer_h, bg);
-            return;
-        }
-        let n = points.len() / dimension;
+        let n = points.len() / 3;
         // Clone the current value out of each optional signal so the reactive
         // read is tracked without having to hold a Ref across the draw call.
         let colors_data: Option<Vec<String>> = colors.and_then(|c| c.read().clone());
         let highlight_data: Option<(String, Marker)> = highlight.and_then(|h| h.read().clone());
         let color_data = colors_rgba(n, colors_data.as_deref(), highlight_data.as_ref());
-        // For a 4-D embedding, spin the ZW plane by `cam.rot_w` and drop
-        // the new `w` here on the CPU. The GL pipeline stays a plain 3-D
-        // scatter, and the framing extent is measured on the projected
-        // 3-vectors, so rolling W into Z reframes the view in step.
-        let projected: Vec<f32>;
-        let coords: &[f32] = if dimension == 4 {
-            projected = project_4d_to_3d(points, cam.rot_w);
-            &projected
-        } else {
-            points
-        };
-        let extent = data_extent(coords);
-        renderer.draw(coords, &color_data, buffer_w, buffer_h, cam, extent, bg);
+        // Higher-D embeddings are projected to 3-D in the parent (see
+        // `project_to_display`), using the same `camera` signal, so the
+        // `rot_w` reads out visibly here without the shader needing a
+        // second code path.
+        let extent = data_extent(points);
+        renderer.draw(points, &color_data, buffer_w, buffer_h, cam, extent, bg);
     });
 
     rsx! {
@@ -910,12 +905,6 @@ pub fn ScatterPlot3D(
             class: "decompositions-plot decompositions-plot--draggable",
             width: "{buffer_width}",
             height: "{buffer_height}",
-            // `tabindex` makes the canvas focusable so it can receive the
-            // `keydown` and `keyup` events driving the axis rotation.
-            // Clicking it (which the pointer handlers already do for
-            // dragging) grabs focus, and the `onpointerdown` below also
-            // requests focus explicitly for touch pointers that do not.
-            tabindex: "0",
             onmounted: move |evt| {
                 let element = evt
                     .data()
@@ -942,10 +931,6 @@ pub fn ScatterPlot3D(
                     start_camera: camera(),
                 };
                 let _ = canvas.set_pointer_capture(pointer_id);
-                // Grab keyboard focus on interaction so the X/Y/Z axis
-                // rotation keys are wired up as soon as the user touches
-                // the widget, without a separate "click to focus" step.
-                let _ = canvas.focus();
                 drag.set(Some(state));
                 evt.prevent_default();
             },
@@ -1008,34 +993,6 @@ pub fn ScatterPlot3D(
                 // Suppress the browser context menu so right-click drags
                 // can pan without popping it.
                 evt.prevent_default();
-            },
-            onkeydown: move |evt| {
-                // Browsers replay `keydown` at the OS key-repeat rate while
-                // a key stays held. Ignore those replays: the ticker task
-                // above already spins as long as `held_axes.any()` is true,
-                // so we only need the first press to record the axis.
-                if evt.data().is_auto_repeating() {
-                    return;
-                }
-                if let Some(axis) = key_axis(evt.data().code()) {
-                    held_axes.with_mut(|a| a.set(axis, true));
-                    evt.prevent_default();
-                }
-            },
-            onkeyup: move |evt| {
-                if let Some(axis) = key_axis(evt.data().code()) {
-                    held_axes.with_mut(|a| a.set(axis, false));
-                    evt.prevent_default();
-                }
-            },
-            onblur: move |_| {
-                // The browser only emits `keyup` events when the focused
-                // element receives them, so a `keydown` followed by a focus
-                // loss (Alt-Tab, click outside, dev-tools popping open)
-                // would strand the axis flags in the "held" state and spin
-                // the camera forever. Clear them on blur so the widget's
-                // state can never drift out of sync with the user's fingers.
-                held_axes.set(HeldAxes::default());
             },
         }
     }
@@ -1447,16 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn key_axis_maps_the_four_physical_letters() {
-        assert_eq!(key_axis(Code::KeyX), Some(RotationAxis::X));
-        assert_eq!(key_axis(Code::KeyY), Some(RotationAxis::Y));
-        assert_eq!(key_axis(Code::KeyZ), Some(RotationAxis::Z));
-        assert_eq!(key_axis(Code::KeyW), Some(RotationAxis::W));
-        assert_eq!(key_axis(Code::KeyA), None);
-        assert_eq!(key_axis(Code::Enter), None);
-    }
-
-    #[test]
     fn held_axes_set_toggles_the_right_flag() {
         let mut axes = HeldAxes::default();
         assert!(!axes.any());
@@ -1472,42 +1419,64 @@ mod tests {
     }
 
     #[test]
-    fn project_4d_to_3d_at_zero_rotation_drops_w() {
-        // With `rot_w = 0` the ZW rotation matrix is the identity, so the
-        // projection is the naive "keep the first three coordinates" drop.
-        let points = [
-            0.0, 1.0, 2.0, 3.0, //
-            -1.0, -2.0, -3.0, -4.0,
-        ];
-        let projected = project_4d_to_3d(&points, 0.0);
-        assert_eq!(projected, vec![0.0, 1.0, 2.0, -1.0, -2.0, -3.0]);
+    fn project_to_display_pass_through_when_dims_match() {
+        let camera = Camera::default();
+        let three = [0.0f32, 1.0, 2.0, -1.0, -2.0, -3.0];
+        assert_eq!(
+            project_to_display(&three, 3, 3, camera).unwrap(),
+            three.to_vec()
+        );
+        let two = [0.5f32, 0.7, -0.5, -0.7];
+        assert_eq!(
+            project_to_display(&two, 2, 2, camera).unwrap(),
+            two.to_vec()
+        );
     }
 
     #[test]
-    fn project_4d_to_3d_at_half_pi_swaps_z_and_w() {
-        // `rot_w = PI / 2` sends `(z, w) -> (w, -z)`, so the visible z
-        // takes over the 4-th coordinate exactly (up to `sin(PI/2) = 1`
-        // rounding) while x and y are untouched.
-        let points = [3.0f32, 5.0, 7.0, 11.0];
-        let projected = project_4d_to_3d(&points, std::f32::consts::FRAC_PI_2);
+    fn project_to_display_drops_w_via_zw_rotation() {
+        let camera_zero = Camera::default();
+        let points = [0.0f32, 1.0, 2.0, 3.0, -1.0, -2.0, -3.0, -4.0];
+        // rot_w = 0 gives plain "drop w".
+        assert_eq!(
+            project_to_display(&points, 4, 3, camera_zero).unwrap(),
+            vec![0.0, 1.0, 2.0, -1.0, -2.0, -3.0],
+        );
+        // rot_w = PI / 2 swaps z and w so the visible z becomes the
+        // original w.
+        let camera_half = Camera {
+            rot_w: std::f32::consts::FRAC_PI_2,
+            ..Camera::default()
+        };
+        let one = [3.0f32, 5.0, 7.0, 11.0];
+        let projected = project_to_display(&one, 4, 3, camera_half).unwrap();
         assert!((projected[0] - 3.0).abs() < 1e-6);
         assert!((projected[1] - 5.0).abs() < 1e-6);
         assert!((projected[2] - 11.0).abs() < 1e-6);
     }
 
     #[test]
-    fn project_4d_to_3d_preserves_norm_in_the_zw_pair() {
-        // ZW rotation is an isometry, so `z^2 + w^2` before must equal
-        // `z'^2 + (dropped w')^2 = z'^2 + (-sin*z + cos*w)^2` after. We
-        // sanity check with `z^2 + z'^2 + w'^2` staying constant, since
-        // dropping w' loses information but the visible z' plus the
-        // computed-but-dropped w' should sum to the original norm.
-        let (z, w) = (2.0f32, 5.0);
-        let rot = 0.9f32;
-        let z_prime = rot.cos() * z + rot.sin() * w;
-        let w_prime = -rot.sin() * z + rot.cos() * w;
-        let original = z * z + w * w;
-        let rotated = z_prime * z_prime + w_prime * w_prime;
-        assert!((original - rotated).abs() < 1e-4, "{original} vs {rotated}");
+    fn project_to_display_applies_3d_rotation_to_2d_target() {
+        // Default camera has `rot_y = 0.4`, so the world X axis rotates
+        // to `(cos(0.4), 0, -sin(0.4))`; the visible 2-D is the leading
+        // pair `(cos(0.4), 0)`.
+        let camera = Camera::default();
+        let projected = project_to_display(&[1.0, 0.0, 0.0], 3, 2, camera).unwrap();
+        assert!((projected[0] - camera.rot_y.cos()).abs() < 1e-6);
+        assert!(projected[1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn project_to_display_refuses_upcast() {
+        let camera = Camera::default();
+        assert!(project_to_display(&[1.0, 0.0, 0.0], 3, 4, camera).is_none());
+        assert!(project_to_display(&[1.0, 0.0], 2, 3, camera).is_none());
+    }
+
+    #[test]
+    fn project_to_display_refuses_mismatched_input_length() {
+        let camera = Camera::default();
+        assert!(project_to_display(&[0.0; 5], 3, 3, camera).is_none());
+        assert!(project_to_display(&[0.0; 5], 4, 3, camera).is_none());
     }
 }
