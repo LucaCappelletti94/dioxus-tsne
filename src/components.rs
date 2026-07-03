@@ -1095,29 +1095,15 @@ fn DecompositionView(config: Decomposition) -> Element {
     // so the callout goes away as soon as the optimizer is running over the new
     // arrangement, or when the panel is cleared.
     let mut embedding_modified = use_signal(|| false);
-    // Monotonic counter incremented on each drop; used to re-fire the one-shot
-    // orange flash on the transport row so a second drop in quick succession
-    // still gets a visible acknowledgement (a plain bool would not retrigger
-    // the effect while `embedding_modified` was already true).
-    let mut drop_counter = use_signal(|| 0u32);
-    // True for ~900ms after every drop; adds the "flashing" class to the
-    // transport row so the commands briefly wash orange, signalling "your
-    // edit was recorded" without lingering after the moment has passed.
+    // True for ~900ms the moment the banner first appears; the transport row
+    // picks up the "flashing" class and washes warm orange once. Kicked from
+    // `on_drag_end` only on the clean->modified transition, so a second drop
+    // while the banner is already up does not retrigger the flash.
     let mut flash_pulse = use_signal(|| false);
     use_effect(move || {
         if busy() {
             embedding_modified.set(false);
         }
-    });
-    use_effect(move || {
-        if drop_counter() == 0 {
-            return;
-        }
-        flash_pulse.set(true);
-        spawn(async move {
-            gloo_timers::future::TimeoutFuture::new(900).await;
-            flash_pulse.set(false);
-        });
     });
 
     // The bridge owns the worker and must live across renders. It is held behind
@@ -1452,13 +1438,19 @@ fn DecompositionView(config: Decomposition) -> Element {
     let on_drag_end = {
         let send_warm_start = send_warm_start.clone();
         move |()| {
-            // A drop always modifies the embedding: mark it so the warning
-            // banner and the orange "modified" accent appear. When a run was
-            // already in flight the warm start below auto-clears this via the
-            // busy-transition effect, but the mark still fires briefly so the
-            // user sees that the drag was recorded.
-            embedding_modified.set(true);
-            drop_counter.with_mut(|c| *c = c.wrapping_add(1));
+            // On the first drop of a fresh session (or after a fit resumed
+            // and cleared the flag), light up the banner and play the one-shot
+            // orange wash across the commands. Subsequent drops while the
+            // banner is still up leave both alone so the flash reads as "this
+            // is a new state" rather than firing on every gesture.
+            if !embedding_modified() {
+                embedding_modified.set(true);
+                flash_pulse.set(true);
+                spawn(async move {
+                    gloo_timers::future::TimeoutFuture::new(900).await;
+                    flash_pulse.set(false);
+                });
+            }
             if resume_pending() {
                 resume_pending.set(false);
                 send_warm_start();
@@ -1520,7 +1512,6 @@ fn DecompositionView(config: Decomposition) -> Element {
             color_source.set(String::from("none"));
             resume_pending.set(false);
             embedding_modified.set(false);
-            drop_counter.set(0);
             flash_pulse.set(false);
         }
     };
