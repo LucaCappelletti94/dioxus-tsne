@@ -1089,6 +1089,36 @@ fn DecompositionView(config: Decomposition) -> Element {
     let can_drag = use_memo(move || embedding.read().is_some());
     // Set true when a grab paused a running fit, so releasing resumes it.
     let mut resume_pending = use_signal(|| false);
+    // Set true when a user has dragged a point since the last run started (or
+    // since Clear). Drives the orange warning banner and the green invitation
+    // pulse on the play button. Cleared automatically the moment a fit resumes
+    // so the callout goes away as soon as the optimizer is running over the new
+    // arrangement, or when the panel is cleared.
+    let mut embedding_modified = use_signal(|| false);
+    // Monotonic counter incremented on each drop; used to re-fire the one-shot
+    // orange flash on the transport row so a second drop in quick succession
+    // still gets a visible acknowledgement (a plain bool would not retrigger
+    // the effect while `embedding_modified` was already true).
+    let mut drop_counter = use_signal(|| 0u32);
+    // True for ~900ms after every drop; adds the "flashing" class to the
+    // transport row so the commands briefly wash orange, signalling "your
+    // edit was recorded" without lingering after the moment has passed.
+    let mut flash_pulse = use_signal(|| false);
+    use_effect(move || {
+        if busy() {
+            embedding_modified.set(false);
+        }
+    });
+    use_effect(move || {
+        if drop_counter() == 0 {
+            return;
+        }
+        flash_pulse.set(true);
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(900).await;
+            flash_pulse.set(false);
+        });
+    });
 
     // The bridge owns the worker and must live across renders. It is held behind
     // a RefCell so the running worker can be orphaned and replaced by a fresh one
@@ -1422,6 +1452,13 @@ fn DecompositionView(config: Decomposition) -> Element {
     let on_drag_end = {
         let send_warm_start = send_warm_start.clone();
         move |()| {
+            // A drop always modifies the embedding: mark it so the warning
+            // banner and the orange "modified" accent appear. When a run was
+            // already in flight the warm start below auto-clears this via the
+            // busy-transition effect, but the mark still fires briefly so the
+            // user sees that the drag was recorded.
+            embedding_modified.set(true);
+            drop_counter.with_mut(|c| *c = c.wrapping_add(1));
             if resume_pending() {
                 resume_pending.set(false);
                 send_warm_start();
@@ -1482,6 +1519,9 @@ fn DecompositionView(config: Decomposition) -> Element {
             run_info.set(None);
             color_source.set(String::from("none"));
             resume_pending.set(false);
+            embedding_modified.set(false);
+            drop_counter.set(0);
+            flash_pulse.set(false);
         }
     };
 
@@ -2173,7 +2213,7 @@ fn DecompositionView(config: Decomposition) -> Element {
     // scatter, which has no focusable canvas of its own).
     let display_dim_from_key = try_set_display_dim.clone();
     use_hook(move || {
-        let clear = clear.clone();
+        let mut clear = clear.clone();
         let toggle_play = {
             let play = play.clone();
             let pause = pause.clone();
@@ -2618,7 +2658,8 @@ fn DecompositionView(config: Decomposition) -> Element {
                 div {
                     id: "transport",
                     class: if embedding.read().is_none() && !busy() { "decompositions-transport decompositions-transport--centered" } else { "decompositions-transport" },
-                    div { class: "decompositions-transport-row",
+                    div {
+                        class: if flash_pulse() { "decompositions-transport-row decompositions-transport-row--flashing" } else { "decompositions-transport-row" },
                         if showing_data_download() {
                             div { class: "decompositions-panel-content",
                                 button {
@@ -2745,7 +2786,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 if !(busy() && (recording_active() || recording_armed())) {
                                     button {
                                         id: "play",
-                                        class: if !busy() && embedding.read().is_none() && dataset.read().is_some() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--attention" } else { "decompositions-iconbtn decompositions-tp-play" },
+                                        class: if embedding_modified() && !busy() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--modified" } else if !busy() && embedding.read().is_none() && dataset.read().is_some() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--attention" } else { "decompositions-iconbtn decompositions-tp-play" },
                                         title: if busy() { "Pause" } else { "Play" },
                                         "aria-label": if busy() { "Pause" } else { "Play" },
                                         onclick: toggle_play,
@@ -2759,7 +2800,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                 if !busy() && embedding.read().is_some() {
                                     button {
                                         id: "restart",
-                                        class: "decompositions-iconbtn decompositions-tp-restart",
+                                        class: if embedding_modified() { "decompositions-iconbtn decompositions-tp-restart decompositions-tp-restart--modified" } else { "decompositions-iconbtn decompositions-tp-restart" },
                                         title: HELP_RUN,
                                         "aria-label": HELP_RUN,
                                         onclick: restart,
@@ -2811,6 +2852,21 @@ fn DecompositionView(config: Decomposition) -> Element {
                                         Icon { icon: FaSliders, width: 14, height: 14, class: "decompositions-icon" }
                                     }
                                 }
+                            }
+                        }
+                    }
+                    // Orange callout shown while the embedding has been edited
+                    // by hand and no fit has since caught up. Sits between the
+                    // commands and the status line so the eye lands on it after
+                    // seeing the play button pulse.
+                    if embedding_modified() {
+                        div {
+                            class: "decompositions-modified-banner",
+                            role: "status",
+                            "aria-live": "polite",
+                            Icon { icon: FaTriangleExclamation, width: 13, height: 13, class: "decompositions-icon" }
+                            span {
+                                "You moved a point by hand. Dragging does not correct or refine the embedding, it overrides it. Press Play to let the optimizer re-fit from the new arrangement."
                             }
                         }
                     }
