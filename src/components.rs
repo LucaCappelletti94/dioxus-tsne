@@ -83,6 +83,17 @@ fn window_size() -> (u32, u32) {
         .unwrap_or((1024, 768))
 }
 
+/// Which section of the "About t-SNE" overlay is currently visible. Kept
+/// as a small enum so the tab buttons switch on discriminant equality
+/// rather than string comparisons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AboutTab {
+    Overview,
+    Read,
+    Controls,
+    Rust,
+}
+
 /// The role a parsed column plays once the user has assigned it: a t-SNE input
 /// feature, a label only used to color points, or dropped entirely.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1114,6 +1125,7 @@ fn DecompositionView(config: Decomposition) -> Element {
     let settings_open = use_signal(|| false);
     // In-app "About t-SNE" overlay, opened by the help button.
     let about_open = use_signal(|| false);
+    let about_tab = use_signal(|| AboutTab::Overview);
     use_hook(move || {
         let Some(document) = web_sys::window().and_then(|window| window.document()) else {
             return;
@@ -3116,9 +3128,13 @@ fn DecompositionView(config: Decomposition) -> Element {
                 }
             }
 
-            // In-app "About t-SNE" overlay, animated in over the plot.
+            // In-app "About t-SNE" overlay, tabbed into the four sections
+            // below so the box stays scanable at a larger canvas.
             if about_open() {
-                div {
+                {
+                    let active = about_tab();
+                    rsx! {
+                        div {
                     class: "decompositions-about-backdrop",
                     onclick: move |_| {
                         let mut about_open = about_open;
@@ -3141,134 +3157,264 @@ fn DecompositionView(config: Decomposition) -> Element {
                         }
                         h2 { "t-SNE" }
                         p { class: "decompositions-about-sub", "t-distributed Stochastic Neighbor Embedding" }
-
-                        h3 { "What it is" }
-                        p {
-                            "t-SNE is a nonlinear dimensionality-reduction method for visualizing "
-                            "high-dimensional data in two dimensions. It places each point so that "
-                            "points near each other in the original space stay near each other in "
-                            "the picture, which makes local structure and clusters easy to see "
-                            a {
-                                href: "https://www.jmlr.org/papers/v9/vandermaaten08a.html",
-                                target: "_blank",
-                                rel: "noopener",
-                                "(van der Maaten & Hinton, 2008)"
-                            }
-                            "."
-                        }
-                        p {
-                            "This tool runs Barnes-Hut t-SNE "
-                            a {
-                                href: "https://www.jmlr.org/papers/v15/vandermaaten14a.html",
-                                target: "_blank",
-                                rel: "noopener",
-                                "(van der Maaten, 2014)"
-                            }
-                            ", an approximation that scales to tens of thousands of points, "
-                            "entirely in your browser on a background worker. The input is first "
-                            "reduced with PCA (30 dimensions by default) to speed up the neighbor "
-                            "search and cut noise, then t-SNE produces the layout you watch evolve. "
-                            "The embedding is initialized from the top eigenvectors of the "
-                            "affinity graph's normalized Laplacian (a spectral embedding) rather "
-                            "than from random noise, which preserves the global layout of the data "
-                            "and makes runs reproducible "
-                            a {
-                                href: "https://doi.org/10.1038/s41467-019-13056-x",
-                                target: "_blank",
-                                rel: "noopener",
-                                "(Kobak & Berens, 2019)"
-                            }
-                            " "
-                            a {
-                                href: "https://doi.org/10.1038/s41587-020-00809-z",
-                                target: "_blank",
-                                rel: "noopener",
-                                "(Kobak & Linderman, 2021)"
-                            }
-                            "."
-                        }
-
-                        h3 { "When to use it" }
-                        p {
-                            "Reach for t-SNE when you want to explore high-dimensional data and ask "
-                            "whether it has structure and what clusters together. Common inputs are "
-                            "learned embeddings, image or text feature vectors, single-cell gene "
-                            "expression, and any table of numeric features per sample. It is an "
-                            "exploratory and presentation tool, not a preprocessing step for "
-                            "downstream models."
-                        }
-
-                        h3 { "How to read it (and what not to read into it)" }
-                        p {
-                            "t-SNE maps are powerful but easy to over-interpret. The caveats below "
-                            "are drawn from "
-                            a {
-                                href: "https://distill.pub/2016/misread-tsne/",
-                                target: "_blank",
-                                rel: "noopener",
-                                "(Wattenberg et al., 2016)"
-                            }
-                            ":"
-                        }
-                        ul {
-                            li {
-                                b { "Perplexity matters. " }
-                                "It sets roughly how many neighbors each point considers, and "
-                                "different values give different pictures. 5 to 50 is typical."
-                            }
-                            li {
-                                b { "Cluster sizes are not meaningful. " }
-                                "t-SNE expands dense clusters and contracts sparse ones, so a blob's "
-                                "area says little about how spread out that group really is."
-                            }
-                            li {
-                                b { "Distances between clusters are often not meaningful. " }
-                                "Treat the global arrangement with caution."
-                            }
-                            li {
-                                b { "Let it converge. " }
-                                "Stopping early leaves a half-formed layout. Run enough epochs, or "
-                                "use \"run forever\" and watch."
-                            }
-                            li {
-                                b { "Runs vary. " }
-                                "The optimization is stochastic, so the stable signal is the cluster "
-                                "structure, not the exact positions."
+                        div {
+                            class: "decompositions-about-tabs",
+                            role: "tablist",
+                            "aria-label": "About t-SNE sections",
+                            for (tab, label) in [
+                                (AboutTab::Overview, "Overview"),
+                                (AboutTab::Read, "How to read"),
+                                (AboutTab::Controls, "Controls"),
+                                (AboutTab::Rust, "Under the hood"),
+                            ] {
+                                {
+                                    let selected = active == tab;
+                                    rsx! {
+                                        button {
+                                            key: "{label}",
+                                            r#type: "button",
+                                            role: "tab",
+                                            "aria-selected": if selected { "true" } else { "false" },
+                                            class: if selected { "decompositions-about-tab decompositions-about-tab--active" } else { "decompositions-about-tab" },
+                                            onclick: move |_| {
+                                                let mut about_tab = about_tab;
+                                                about_tab.set(tab);
+                                            },
+                                            "{label}"
+                                        }
+                                    }
+                                }
                             }
                         }
-                        p {
-                            "The settings panel exposes the knobs that drive all of this: "
-                            "perplexity, epochs, learning rate, PCA dimensions, and the "
-                            "early-exaggeration phase."
-                        }
-
-                        h3 { "Built in Rust" }
-                        p {
-                            "This whole tool is "
-                            a { href: "https://www.rust-lang.org/what/wasm", target: "_blank", rel: "noopener", "Rust compiled to WebAssembly" }
-                            ", served as static files with no backend. The interface (rendered by "
-                            a { href: "https://dioxuslabs.com", target: "_blank", rel: "noopener", "Dioxus" }
-                            "), the file parsing, and "
-                            a { href: "https://github.com/frjnn/bhtsne", target: "_blank", rel: "noopener", "t-SNE" }
-                            " itself all run in your browser, so the data you load never leaves "
-                            "your machine."
-                        }
-                        p {
-                            "t-SNE runs across all of your CPU cores at once with "
-                            a { href: "https://github.com/rayon-rs/rayon", target: "_blank", rel: "noopener", "Rayon" }
-                            ", which works in the browser through "
-                            a { href: "https://github.com/RReverser/wasm-bindgen-rayon", target: "_blank", rel: "noopener", "wasm-bindgen-rayon" }
-                            " once the page is cross-origin isolated (the "
-                            a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Opener-Policy", target: "_blank", rel: "noopener", "COOP" }
-                            " and "
-                            a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy", target: "_blank", rel: "noopener", "COEP" }
-                            " headers)."
-                        }
-                        p {
-                            "Modern web development will be written in Rust. "
-                            a { href: "https://xkcd.com/2314/", target: "_blank", rel: "noopener", "Carcinization advances." }
+                        div {
+                            class: "decompositions-about-tabpanel",
+                            role: "tabpanel",
+                            if active == AboutTab::Overview {
+                                h3 { "What it is" }
+                                p {
+                                    "t-SNE is a nonlinear dimensionality-reduction method for visualizing "
+                                    "high-dimensional data in two dimensions. It places each point so that "
+                                    "points near each other in the original space stay near each other in "
+                                    "the picture, which makes local structure and clusters easy to see "
+                                    a {
+                                        href: "https://www.jmlr.org/papers/v9/vandermaaten08a.html",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "(van der Maaten & Hinton, 2008)"
+                                    }
+                                    "."
+                                }
+                                p {
+                                    "This tool runs Barnes-Hut t-SNE "
+                                    a {
+                                        href: "https://www.jmlr.org/papers/v15/vandermaaten14a.html",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "(van der Maaten, 2014)"
+                                    }
+                                    ", an approximation that scales to tens of thousands of points, "
+                                    "entirely in your browser on a background worker. The input is first "
+                                    "reduced with PCA (30 dimensions by default) to speed up the neighbor "
+                                    "search and cut noise, then t-SNE produces the layout you watch evolve. "
+                                    "The embedding is initialized from the top eigenvectors of the "
+                                    "affinity graph's normalized Laplacian (a spectral embedding) rather "
+                                    "than from random noise, which preserves the global layout of the data "
+                                    "and makes runs reproducible "
+                                    a {
+                                        href: "https://doi.org/10.1038/s41467-019-13056-x",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "(Kobak & Berens, 2019)"
+                                    }
+                                    " "
+                                    a {
+                                        href: "https://doi.org/10.1038/s41587-020-00809-z",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "(Kobak & Linderman, 2021)"
+                                    }
+                                    "."
+                                }
+                                h3 { "When to use it" }
+                                p {
+                                    "Reach for t-SNE when you want to explore high-dimensional data and ask "
+                                    "whether it has structure and what clusters together. Common inputs are "
+                                    "learned embeddings, image or text feature vectors, single-cell gene "
+                                    "expression, and any table of numeric features per sample. It is an "
+                                    "exploratory and presentation tool, not a preprocessing step for "
+                                    "downstream models."
+                                }
+                            }
+                            if active == AboutTab::Read {
+                                h3 { "How to read it (and what not to read into it)" }
+                                p {
+                                    "t-SNE maps are powerful but easy to over-interpret. The caveats below "
+                                    "are drawn from "
+                                    a {
+                                        href: "https://distill.pub/2016/misread-tsne/",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "(Wattenberg et al., 2016)"
+                                    }
+                                    ":"
+                                }
+                                ul {
+                                    li {
+                                        b { "Perplexity matters. " }
+                                        "It sets roughly how many neighbors each point considers, and "
+                                        "different values give different pictures. 5 to 50 is typical."
+                                    }
+                                    li {
+                                        b { "Cluster sizes are not meaningful. " }
+                                        "t-SNE expands dense clusters and contracts sparse ones, so a blob's "
+                                        "area says little about how spread out that group really is."
+                                    }
+                                    li {
+                                        b { "Distances between clusters are often not meaningful. " }
+                                        "Treat the global arrangement with caution."
+                                    }
+                                    li {
+                                        b { "Let it converge. " }
+                                        "Stopping early leaves a half-formed layout. Run enough epochs, or "
+                                        "use \"run forever\" and watch."
+                                    }
+                                    li {
+                                        b { "Runs vary. " }
+                                        "The optimization is stochastic, so the stable signal is the cluster "
+                                        "structure, not the exact positions."
+                                    }
+                                }
+                                p {
+                                    "The settings panel exposes the knobs that drive all of this: "
+                                    "perplexity, epochs, learning rate, PCA dimensions, and the "
+                                    "early-exaggeration phase."
+                                }
+                            }
+                            if active == AboutTab::Controls {
+                                h3 { "Global shortcuts" }
+                                p {
+                                    "These work anywhere on the page, regardless of which display "
+                                    "dimensionality is currently visible."
+                                }
+                                dl { class: "decompositions-shortcuts",
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "Space" } }
+                                        dd { "Play the fit if it is paused or has not started yet, pause it if it is running. Ignored before a dataset is loaded." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "Esc" } }
+                                        dd { "Clear the loaded dataset and drop back to the drop zone." }
+                                    }
+                                }
+                                h3 { "Display dimensionality" }
+                                p {
+                                    "Switching the display never touches the computation: the running fit "
+                                    "and the stored embedding keep whatever dimensionality they started with. "
+                                    "If the requested display is higher than the current embedding, the "
+                                    "Dimension toggle flashes red and an inline banner explains why."
+                                }
+                                dl { class: "decompositions-shortcuts",
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "2" } }
+                                        dd { "Flatten to a 2-D scatter. Draggable points and per-class marker shapes come back at this dimensionality." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "3" } }
+                                        dd { "Show the 3-D orbit view. Pointer drag rotates, right drag pans, wheel zooms." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "4" } }
+                                        dd { "Same 3-D orbit view, plus the ZW rotation the W key drives, so the 4th axis of a 4-D embedding rotates into the visible three." }
+                                    }
+                                }
+                                h3 { "Rotation keys" }
+                                p {
+                                    "Hold a letter to spin the world about that axis at a constant rate. "
+                                    "Holding two keys inclines the rotation between their axes; holding "
+                                    "three at once traces a curve around the (1, 1, 1) diagonal, and adding "
+                                    "the fourth key drops the extra dimension into the mix. The rotation "
+                                    "stays consistent across display switches, so changing your view of a "
+                                    "3-D or 4-D embedding preserves whatever orientation you had set."
+                                }
+                                dl { class: "decompositions-shortcuts",
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "X" } }
+                                        dd { "Pitch: rotate the world around its X axis." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "Y" } }
+                                        dd { "Yaw: rotate the world around its Y axis." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "Z" } }
+                                        dd { "Roll: rotate the world around its Z axis." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "W" } }
+                                        dd { "4-D rotation in the ZW plane. Only visibly changes anything when the current embedding is 4-D." }
+                                    }
+                                }
+                                h3 { "Pointer and wheel" }
+                                p {
+                                    "The 3-D scatter also responds to pointer gestures. The 2-D scatter "
+                                    "uses the pointer to grab and drag individual points instead, so these "
+                                    "gestures do not translate there."
+                                }
+                                dl { class: "decompositions-shortcuts",
+                                    div { class: "decompositions-shortcut",
+                                        dt {
+                                            kbd { "Left" }
+                                            " or "
+                                            kbd { "Middle" }
+                                            " drag"
+                                        }
+                                        dd { "Orbit the camera: horizontal is yaw, vertical is pitch, both applied on top of any rotation the keys have set." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt {
+                                            kbd { "Right" }
+                                            " drag"
+                                        }
+                                        dd { "Pan the view without rotating." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { kbd { "Wheel" } }
+                                        dd { "Zoom in and out around the current viewpoint." }
+                                    }
+                                }
+                            }
+                            if active == AboutTab::Rust {
+                                h3 { "Built in Rust" }
+                                p {
+                                    "This whole tool is "
+                                    a { href: "https://www.rust-lang.org/what/wasm", target: "_blank", rel: "noopener", "Rust compiled to WebAssembly" }
+                                    ", served as static files with no backend. The interface (rendered by "
+                                    a { href: "https://dioxuslabs.com", target: "_blank", rel: "noopener", "Dioxus" }
+                                    "), the file parsing, and "
+                                    a { href: "https://github.com/frjnn/bhtsne", target: "_blank", rel: "noopener", "t-SNE" }
+                                    " itself all run in your browser, so the data you load never leaves "
+                                    "your machine."
+                                }
+                                p {
+                                    "t-SNE runs across all of your CPU cores at once with "
+                                    a { href: "https://github.com/rayon-rs/rayon", target: "_blank", rel: "noopener", "Rayon" }
+                                    ", which works in the browser through "
+                                    a { href: "https://github.com/RReverser/wasm-bindgen-rayon", target: "_blank", rel: "noopener", "wasm-bindgen-rayon" }
+                                    " once the page is cross-origin isolated (the "
+                                    a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Opener-Policy", target: "_blank", rel: "noopener", "COOP" }
+                                    " and "
+                                    a { href: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy", target: "_blank", rel: "noopener", "COEP" }
+                                    " headers)."
+                                }
+                                p {
+                                    "Modern web development will be written in Rust. "
+                                    a { href: "https://xkcd.com/2314/", target: "_blank", rel: "noopener", "Carcinization advances." }
+                                }
+                            }
                         }
                     }
+                }
+                }
                 }
             }
         }
