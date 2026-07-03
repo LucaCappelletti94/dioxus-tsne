@@ -2787,8 +2787,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     button {
                                         id: "play",
                                         class: if embedding_modified() && !busy() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--modified" } else if !busy() && embedding.read().is_none() && dataset.read().is_some() { "decompositions-iconbtn decompositions-tp-play decompositions-tp-play--attention" } else { "decompositions-iconbtn decompositions-tp-play" },
-                                        title: if busy() { "Pause" } else { "Play" },
-                                        "aria-label": if busy() { "Pause" } else { "Play" },
+                                        title: if busy() { "Pause (Space)" } else { "Play (Space)" },
+                                        "aria-label": if busy() { "Pause (Space)" } else { "Play (Space)" },
+                                        "aria-keyshortcuts": "Space",
                                         onclick: toggle_play,
                                         if busy() {
                                             Icon { icon: FaPause, width: 15, height: 15, class: "decompositions-icon" }
@@ -2982,6 +2983,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                                             class: if active { "decompositions-toggle-option decompositions-toggle-option--active" } else { "decompositions-toggle-option" },
                                             role: "radio",
                                             "aria-checked": if active { "true" } else { "false" },
+                                            title: "Show as {value}D ({value})",
+                                            "aria-label": "Show as {value}D ({value})",
+                                            "aria-keyshortcuts": "{value}",
                                             onclick: move |_| {
                                                 dimension.set(value);
                                                 try_set(value);
