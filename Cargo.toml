@@ -110,3 +110,27 @@ web-sys = { version = "0.3", features = [
 [dev-dependencies]
 rust_xlsxwriter = "0.95.0"
 serde_json = "1.0.150"
+
+
+# Release profile tuned for the wasm numeric worker (and everything else that
+# ends up in a release build). `lto = "thin"` inlines across crates like fat
+# LTO but without fat's whole-program merge step, which on this workspace
+# blows past a half-hour link budget. `codegen-units = 1` still lets rustc
+# make full-crate decisions after thin LTO. `panic = "abort"` drops unwinding
+# tables, shaving code size on top.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# dx compiles the app crate under this custom profile. Without an entry it
+# inherits nothing user-defined, so it stays at the CLI defaults
+# (`opt-level = "s"`, `embed-bitcode = false`). Override to keep `opt-level =
+# 3` and pick up the same thin-LTO settings as the worker, matching runtime
+# speed at the cost of a longer link step.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
