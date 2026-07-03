@@ -81,6 +81,7 @@ web-sys = { version = "0.3", features = [
     "BlobEvent",
     "BlobPropertyBag",
     "CanvasRenderingContext2d",
+    "CssStyleDeclaration",
     "Document",
     "DomRect",
     "Element",

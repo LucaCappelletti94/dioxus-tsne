@@ -94,6 +94,17 @@ enum AboutTab {
     Rust,
 }
 
+/// Handle to the currently-mounted "About t-SNE" modal element, or `None`
+/// if the overlay is closed or the DOM is unreachable. Used by the tab
+/// switcher to freeze the modal's height for the FLIP-style height
+/// transition between tab bodies of different intrinsic sizes.
+fn about_modal_element() -> Option<web_sys::HtmlElement> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|doc| doc.query_selector(".decompositions-about").ok().flatten())
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+}
+
 /// The role a parsed column plays once the user has assigned it: a t-SNE input
 /// feature, a label only used to color points, or dropped entirely.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1126,6 +1137,54 @@ fn DecompositionView(config: Decomposition) -> Element {
     // In-app "About t-SNE" overlay, opened by the help button.
     let about_open = use_signal(|| false);
     let about_tab = use_signal(|| AboutTab::Overview);
+    // Holds the modal's pixel height captured the instant a tab switch is
+    // requested. The onclick handler freezes the modal at that height via
+    // inline `style`, then the effect below reads the new content's natural
+    // height once Dioxus has committed the new tab and animates between the
+    // two. Consumed with `.take()` so a run does not re-fire on the next
+    // unrelated re-render.
+    let mut pending_about_start = use_signal(|| None::<f64>);
+    use_effect(move || {
+        // Subscribe to tab changes.
+        let _ = about_tab();
+        let start = pending_about_start.write().take();
+        let Some(start) = start else {
+            return;
+        };
+        let Some(modal) = about_modal_element() else {
+            return;
+        };
+        // Height is currently pinned at `start` via the onclick freeze. Clear
+        // it to measure the natural height Dioxus just committed.
+        let style = modal.style();
+        let _ = style.remove_property("height");
+        let _ = style.remove_property("transition");
+        let end = f64::from(modal.offset_height());
+        if (end - start).abs() < 1.0 {
+            return;
+        }
+        // Snap back to `start` with transitions disabled, force a reflow, then
+        // enable the transition and set the target height so the interpolation
+        // begins from the frozen value rather than snapping to `end` first.
+        let _ = style.set_property("transition", "none");
+        let _ = style.set_property("height", &format!("{start}px"));
+        // The read forces a synchronous layout so the "none" transition and
+        // the pinned start height are applied before the next declaration
+        // switches the transition back on.
+        let _ = modal.offset_height();
+        let _ = style.set_property("transition", "height 240ms cubic-bezier(0.2, 0.7, 0.3, 1)");
+        let _ = style.set_property("height", &format!("{end}px"));
+        // Clear the inline overrides once the transition has run so the modal
+        // returns to natural sizing (and honours future content changes such
+        // as a viewport resize).
+        let modal_clone = modal.clone();
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(280).await;
+            let style = modal_clone.style();
+            let _ = style.remove_property("height");
+            let _ = style.remove_property("transition");
+        });
+    });
     use_hook(move || {
         let Some(document) = web_sys::window().and_then(|window| window.document()) else {
             return;
@@ -3178,6 +3237,18 @@ fn DecompositionView(config: Decomposition) -> Element {
                                             class: if selected { "decompositions-about-tab decompositions-about-tab--active" } else { "decompositions-about-tab" },
                                             onclick: move |_| {
                                                 let mut about_tab = about_tab;
+                                                if about_tab() == tab {
+                                                    return;
+                                                }
+                                                let mut pending_about_start = pending_about_start;
+                                                if let Some(modal) = about_modal_element() {
+                                                    let start = f64::from(modal.offset_height());
+                                                    let style = modal.style();
+                                                    let _ = style.set_property("transition", "none");
+                                                    let _ = style
+                                                        .set_property("height", &format!("{start}px"));
+                                                    pending_about_start.set(Some(start));
+                                                }
                                                 about_tab.set(tab);
                                             },
                                             "{label}"
