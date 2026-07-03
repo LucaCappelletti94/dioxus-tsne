@@ -7,7 +7,7 @@ use crate::pca::pca;
 /// Output of a completed decomposition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecomposeOutput {
-    /// Row major embedding, `n_samples * 2` long.
+    /// Row major `n_samples * dimension` embedding.
     pub embedding: Vec<f32>,
     /// Final KL divergence of the t-SNE fit.
     pub kl_divergence: Option<f32>,
@@ -24,6 +24,7 @@ struct AffinityKey {
     n_samples: usize,
     pca_dims: usize,
     perplexity_bits: u32,
+    dimension: usize,
 }
 
 /// Caches the affinity graph of the last t-SNE run so a warm-start continuation
@@ -35,7 +36,7 @@ pub(crate) struct TsneCache {
     entry: Option<(AffinityKey, bhtsne::SparseAffinities<f32>)>,
 }
 
-/// Runs a decomposition to two dimensions, reporting intermediate embeddings
+/// Runs a decomposition, reporting intermediate embeddings
 /// through `snapshot`.
 ///
 /// # Arguments
@@ -104,8 +105,38 @@ where
 }
 
 /// Runs Barnes-Hut t-SNE with PCA preprocessing, reusing and refreshing the
-/// affinity cache.
+/// affinity cache. Dispatches to [`tsne_impl`] on the requested output
+/// dimensionality.
 fn tsne<C>(
+    data: &[f32],
+    n_samples: usize,
+    n_features: usize,
+    params: &TsneParams,
+    cache: &mut TsneCache,
+    snapshot: C,
+) -> Result<DecomposeOutput, String>
+where
+    C: FnMut(usize, &[f32]) + Send + Sync,
+{
+    match params.dimension {
+        2 => tsne_impl::<2, _>(data, n_samples, n_features, params, cache, snapshot),
+        3 => tsne_impl::<3, _>(data, n_samples, n_features, params, cache, snapshot),
+        4 => tsne_impl::<4, _>(data, n_samples, n_features, params, cache, snapshot),
+        other => Err(format!(
+            "unsupported output dimension {other}, expected 2, 3, or 4"
+        )),
+    }
+}
+
+/// Const-generic t-SNE implementation for output dimension `D`.
+///
+/// The embedding dimensionality is a const generic on `bhtsne::tSNE` (the final
+/// `D`), so the caller must dispatch on the runtime `params.dimension` into this
+/// function. `bhtsne`'s `barnes_hut` requires `Dim<D>: Morton<D>`, which is
+/// implemented for `D in {2, 3, 4, 5, 6}`; this crate exposes 2, 3, and 4,
+/// since the visualization is at most 3-D (a 4-D embedding is projected to
+/// 3-D at draw time by rotating in the ZW plane and dropping W).
+fn tsne_impl<const D: usize, C>(
     data: &[f32],
     n_samples: usize,
     n_features: usize,
@@ -114,6 +145,7 @@ fn tsne<C>(
     mut snapshot: C,
 ) -> Result<DecomposeOutput, String>
 where
+    bhtsne::Dim<D>: bhtsne::Morton<D> + bhtsne::SpectralBlock,
     C: FnMut(usize, &[f32]) + Send + Sync,
 {
     // Mirrors the bhtsne perplexity check, which would otherwise panic.
@@ -124,15 +156,16 @@ where
             (3.0 * params.perplexity).ceil() as usize + 1
         ));
     }
-    // A warm start seeds the two dimensional output, validated here so the
-    // worker reports an error instead of tripping the bhtsne length assert.
+    // A warm start seeds the output, validated here so the worker reports an
+    // error instead of tripping the bhtsne length assert.
     if let Some(init) = &params.initial_embedding
-        && init.len() != n_samples * 2
+        && init.len() != n_samples * D
     {
         return Err(format!(
-            "initial embedding has {} values, expected {} for {n_samples} samples",
+            "initial embedding has {} values, expected {} for {n_samples} samples in {}D",
             init.len(),
-            n_samples * 2
+            n_samples * D,
+            D
         ));
     }
 
@@ -149,9 +182,7 @@ where
     let samples: Vec<&[f32]> = data.chunks(n_features).collect();
     let snapshot_every = params.snapshot_every.max(1);
 
-    // The embedding dimensionality is a const generic on `tSNE` now (the final
-    // `2`), so it is annotated here instead of being a builder setter.
-    let mut fit: bhtsne::tSNE<'_, f32, &[f32], 2> = bhtsne::tSNE::new(&samples);
+    let mut fit: bhtsne::tSNE<'_, f32, &[f32], D> = bhtsne::tSNE::new(&samples);
     fit.perplexity(params.perplexity)
         .epochs(params.epochs)
         .epoch_callback(move |epoch, embedding| {
@@ -179,13 +210,19 @@ where
             .stop_lying_epoch(0)
             .momentum_switch_epoch(0);
     } else {
-        // Fresh run: initialize from the top two principal components rather
-        // than from random noise. PCA initialization preserves the global
-        // structure of the data far better and makes runs reproducible
-        // (Kobak & Berens 2019, Kobak & Linderman 2021). Early exaggeration is
-        // left on, as recommended. The seed is scaled to a standard deviation
-        // of 1e-4 on the first axis, matching bhtsne's random-init magnitude.
-        fit.initial_embedding(pca_initialization(data, n_samples, n_features));
+        // Fresh run: seed the fit from the top eigenvectors of the
+        // affinity graph's normalized Laplacian (Kobak & Linderman 2021).
+        // Superior to PCA seeding whenever it applies, and unlike PCA it
+        // needs no feature matrix: it works off exactly the graph bhtsne
+        // is about to fit, so it stays available for warm-start /
+        // precomputed-neighbor workflows too. bhtsne's builder runs the
+        // solver internally after the affinities are built, so we only
+        // flip the flag on here; no per-axis whitening is needed either,
+        // since the eigenvectors already come back orthonormal, and the
+        // usual Kobak & Berens 1e-4 magnitude scaling is applied by the
+        // solver itself before it hands the seed to the optimizer. Early
+        // exaggeration stays on, as recommended.
+        fit.spectral_init();
     }
 
     // Reuse the cached affinity graph on a warm-start continuation of the same
@@ -195,6 +232,7 @@ where
         n_samples,
         pca_dims: params.pca_dims,
         perplexity_bits: params.perplexity.to_bits(),
+        dimension: D,
     };
     let reuse =
         params.initial_embedding.is_some() && cache.entry.as_ref().is_some_and(|(k, _)| *k == key);
@@ -227,39 +265,6 @@ where
         embedding: fit.embedding(),
         kl_divergence,
     })
-}
-
-/// Builds a t-SNE initialization from the top two principal components of the
-/// (already PCA-reduced) data, scaled so the first axis has a standard deviation
-/// of 1e-4, matching bhtsne's random-init magnitude. Returns a row-major
-/// `n_samples * 2` seed. PCA initialization preserves global structure and makes
-/// runs reproducible (Kobak & Berens 2019, Kobak & Linderman 2021).
-fn pca_initialization(data: &[f32], n_samples: usize, n_features: usize) -> Vec<f32> {
-    let result = pca(data, n_samples, n_features, 2);
-    let components = result.n_components.max(1);
-    let mut init = vec![0.0f32; n_samples * 2];
-    for row in 0..n_samples {
-        for col in 0..2.min(components) {
-            init[row * 2 + col] = result.data[row * components + col];
-        }
-    }
-    // Scale so the first axis has standard deviation 1e-4, keeping the PC1:PC2
-    // ratio (both axes share one factor).
-    let mean = init.iter().step_by(2).sum::<f32>() / n_samples as f32;
-    let variance = init
-        .iter()
-        .step_by(2)
-        .map(|&value| (value - mean) * (value - mean))
-        .sum::<f32>()
-        / n_samples as f32;
-    let std = variance.sqrt();
-    if std > 0.0 {
-        let scale = 1e-4 / std;
-        for value in &mut init {
-            *value *= scale;
-        }
-    }
-    init
 }
 
 #[cfg(test)]
@@ -341,6 +346,7 @@ mod tests {
         assert_eq!(key.n_samples, N);
         assert_eq!(key.pca_dims, 4);
         assert_eq!(key.perplexity_bits, 20.0f32.to_bits());
+        assert_eq!(key.dimension, 2);
 
         // A run at a different perplexity rebuilds and rekeys the cache, so a
         // later continuation does not reuse a stale graph.

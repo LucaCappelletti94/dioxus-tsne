@@ -13,6 +13,7 @@ use crate::color::{ColorScale, Coloring, Marker, colorize};
 use crate::ingest::{Dataset, LabelColumn};
 use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest, WorkerResponse};
 use crate::plot::ScatterPlot;
+use crate::plot3d::ScatterPlot3D;
 use crate::worker::DecompositionWorker;
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
@@ -226,8 +227,8 @@ fn auto_learning_rate(n_samples: usize) -> f32 {
 
 // Plain language explanations shown as hover tooltips (`title`) and to screen
 // readers (`aria-label`), so a newcomer can learn what each control does just by
-// hovering it.
 const HELP_PERPLEXITY: &str = "Roughly how many close neighbors each point pays attention to. Smaller makes tight local clumps, larger spreads things out. 5 to 50 is typical.";
+const HELP_DIMENSION: &str = "Output dimensionality of the embedding. 2 for a flat scatter plot, 3 for an interactive 3D plot with orbit controls, 4 for a 4D embedding shown as a rotatable 3D projection (hold W to spin into the 4th axis).";
 const HELP_EPOCHS: &str = "How many refinement steps to run. More steps polish the layout further but take longer. 1000 is a good default, a few hundred is often enough.";
 const HELP_LEARNING_RATE: &str = "How big each refinement step is. Too small and it gets stuck, too large and it looks chaotic. Leave it empty for 'auto', a value scaled to the dataset size (shown greyed in the box). 200 is a common manual value.";
 const HELP_PCA_DIMS: &str = "Before t-SNE the data is first squeezed to this many dimensions with PCA to speed things up and cut noise. 30 by default, a typical range is 30 to 50, 2 or more.";
@@ -728,6 +729,7 @@ fn DecompositionView(config: Decomposition) -> Element {
     let defaults = TsneParams::default();
     let mut pca_dims = use_signal(|| defaults.pca_dims);
     let mut perplexity = use_signal(|| defaults.perplexity);
+    let mut dimension = use_signal(|| defaults.dimension);
     let mut epochs = use_signal(|| defaults.epochs);
     // Bake the color legend into the downloaded snapshot (a reserved strip).
     let mut legend_in_export = use_signal(|| false);
@@ -776,6 +778,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             epochs: epochs(),
             learning_rate: learning_rate(),
             pca_dims: pca_dims(),
+            dimension: dimension(),
             early_exaggeration: early_exaggeration(),
             early_exaggeration_epochs: exaggeration_epochs(),
             ..TsneParams::default()
@@ -1129,7 +1132,7 @@ fn DecompositionView(config: Decomposition) -> Element {
             let Some(seed) = embedding.read().clone() else {
                 return;
             };
-            if seed.len() != parsed.n_samples * 2 {
+            if seed.len() != parsed.n_samples * dimension() {
                 return;
             }
             let Some((data, n_features)) = build_feature_matrix(&parsed, &columns.read()) else {
@@ -1140,6 +1143,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                 epochs: epochs(),
                 learning_rate: learning_rate(),
                 pca_dims: pca_dims(),
+                dimension: dimension(),
                 early_exaggeration: early_exaggeration(),
                 early_exaggeration_epochs: exaggeration_epochs(),
                 initial_embedding: Some(seed),
@@ -1451,6 +1455,7 @@ fn DecompositionView(config: Decomposition) -> Element {
         let coloring_result = coloring_result.to_owned();
         let legend_in_export = legend_in_export.to_owned();
         let mut svg_exporting = svg_exporting.to_owned();
+        let dimension = dimension.to_owned();
         move |_| {
             let points = match &*embedding.read() {
                 Some(p) => p.clone(),
@@ -1488,9 +1493,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                     },
                 )
             });
-
             svg_exporting.set(false);
             bridge.borrow().send(WorkerRequest::ExportSvg {
+                dimension: dimension(),
                 points,
                 colors: colors_data,
                 markers: markers_vec,
@@ -2057,18 +2062,31 @@ fn DecompositionView(config: Decomposition) -> Element {
 
             // Full-bleed plot.
             div { class: "decompositions-plot-area",
-                ScatterPlot {
-                    embedding,
-                    colors: Some(colors.into()),
-                    markers: Some(markers.into()),
-                    highlight: Some(highlight.into()),
-                    draggable: plot_draggable,
-                    on_point_moved,
-                    on_drag_start,
-                    on_drag_end,
-                    width: viewport().0,
-                    height: viewport().1,
-                    pixel_ratio,
+                if dimension() >= 3 {
+                    ScatterPlot3D {
+                        embedding,
+                        colors: Some(colors.into()),
+                        markers: Some(markers.into()),
+                        highlight: Some(highlight.into()),
+                        dimension: dimension(),
+                        width: viewport().0,
+                        height: viewport().1,
+                        pixel_ratio,
+                    }
+                } else {
+                    ScatterPlot {
+                        embedding,
+                        colors: Some(colors.into()),
+                        markers: Some(markers.into()),
+                        highlight: Some(highlight.into()),
+                        draggable: plot_draggable,
+                        on_point_moved,
+                        on_drag_start,
+                        on_drag_end,
+                        width: viewport().0,
+                        height: viewport().1,
+                        pixel_ratio,
+                    }
                 }
             }
 
@@ -2586,6 +2604,33 @@ fn DecompositionView(config: Decomposition) -> Element {
                             },
                         }
                     }
+                    div { class: "decompositions-field", title: HELP_DIMENSION,
+                        span { class: "decompositions-field-label",
+                            Icon { icon: FaCube, width: 14, height: 14, class: "decompositions-icon" }
+                            "Dimension"
+                        }
+                        div {
+                            class: "decompositions-toggle",
+                            role: "radiogroup",
+                            "aria-label": "Dimension",
+                            for value in [2usize, 3, 4] {
+                                {
+                                    let active = dimension() == value;
+                                    rsx! {
+                                        button {
+                                            key: "{value}",
+                                            r#type: "button",
+                                            class: if active { "decompositions-toggle-option decompositions-toggle-option--active" } else { "decompositions-toggle-option" },
+                                            role: "radio",
+                                            "aria-checked": if active { "true" } else { "false" },
+                                            onclick: move |_| dimension.set(value),
+                                            "{value}D"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     label { class: "decompositions-field", r#for: "epochs", title: HELP_EPOCHS, "aria-label": HELP_EPOCHS,
                         span { class: "decompositions-field-label",
                             Icon { icon: FaRepeat, width: 14, height: 14, class: "decompositions-icon" }
@@ -2881,7 +2926,8 @@ fn DecompositionView(config: Decomposition) -> Element {
                             "entirely in your browser on a background worker. The input is first "
                             "reduced with PCA (30 dimensions by default) to speed up the neighbor "
                             "search and cut noise, then t-SNE produces the layout you watch evolve. "
-                            "The embedding is initialized from the top principal components rather "
+                            "The embedding is initialized from the top eigenvectors of the "
+                            "affinity graph's normalized Laplacian (a spectral embedding) rather "
                             "than from random noise, which preserves the global layout of the data "
                             "and makes runs reproducible "
                             a {

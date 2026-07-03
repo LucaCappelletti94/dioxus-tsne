@@ -59,6 +59,7 @@ mod ingest;
 mod messages;
 mod pca;
 mod plot;
+mod plot3d;
 mod worker;
 
 /// The default stylesheet of the components, injected by [`Decomposition`]
@@ -73,4 +74,5 @@ pub use ingest::{Dataset, IngestError, LabelColumn, ParsedFile, parse_dataset, p
 pub use messages::{DecompositionMethod, TsneParams, WorkerRequest, WorkerResponse};
 pub use pca::{PcaResult, pca};
 pub use plot::ScatterPlot;
+pub use plot3d::ScatterPlot3D;
 pub use worker::DecompositionWorker;

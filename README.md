@@ -5,10 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Live demo](https://img.shields.io/badge/demo-tsne.luca.phd-blue)](https://tsne.luca.phd)
 
-Barnes-Hut t-SNE in the browser, in Rust + WebAssembly. Drop a CSV, TSV, Parquet, Arrow, NumPy (`.npy`) or spreadsheet (`.xlsx`, `.ods`, `.xls`, `.xlsb`) file (or pick an example) and watch the embedding form. The fit runs off the main thread on a `SharedArrayBuffer` Rayon pool, with PCA initialization for stable global structure. Multi-sheet workbooks get a sheet picker in the settings panel.
+Barnes-Hut t-SNE in the browser, in Rust + WebAssembly. Drop a CSV, TSV, Parquet, Arrow, NumPy (`.npy`) or spreadsheet (`.xlsx`, `.ods`, `.xls`, `.xlsb`) file (or pick an example) and watch the embedding form. The fit runs off the main thread on a `SharedArrayBuffer` Rayon pool, seeded from the spectral embedding of the affinity graph so global structure survives the fit. Multi-sheet workbooks get a sheet picker in the settings panel.
 
 ## References
 
-t-SNE: [van der Maaten & Hinton 2008](https://www.jmlr.org/papers/v9/vandermaaten08a.html), [van der Maaten 2014](https://www.jmlr.org/papers/v15/vandermaaten14a.html). Reading the maps: [Wattenberg et al. 2016](https://distill.pub/2016/misread-tsne/). PCA init: [Kobak & Berens 2019](https://doi.org/10.1038/s41467-019-13056-x), [Kobak & Linderman 2021](https://doi.org/10.1038/s41587-020-00809-z). Implementation: [bhtsne](https://github.com/frjnn/bhtsne).
+t-SNE: [van der Maaten & Hinton 2008](https://www.jmlr.org/papers/v9/vandermaaten08a.html), [van der Maaten 2014](https://www.jmlr.org/papers/v15/vandermaaten14a.html). Reading the maps: [Wattenberg et al. 2016](https://distill.pub/2016/misread-tsne/). Informative seeding: [Kobak & Berens 2019](https://doi.org/10.1038/s41467-019-13056-x), [Kobak & Linderman 2021](https://doi.org/10.1038/s41587-020-00809-z). Implementation: [bhtsne](https://github.com/frjnn/bhtsne).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to build and run it locally.

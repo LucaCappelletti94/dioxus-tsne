@@ -503,8 +503,12 @@ pub(crate) fn snapshot_png(
 /// `size` is the square viewport side in logical pixels.
 /// `progress` is called with a fraction (0.0 to 1.0) after each batch is
 /// rendered, so the caller can drive a progress bar.
+/// `dimension` is the output dimensionality of the embedding (2 or 3);
+/// 3-D points are orthographically projected to 2-D by dropping the z axis.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_svg(
     points: &[f32],
+    dimension: usize,
     colors: &[String],
     markers: &[u8],
     highlight: Option<(&str, u8)>,
@@ -514,14 +518,24 @@ pub(crate) fn build_svg(
 ) -> Option<String> {
     use std::fmt::Write;
 
-    let n = points.len() / 2;
+    // Project 3-D points to 2-D by dropping the z axis (orthographic
+    // projection). For 2-D this is a no-op clone.
+    let n = points.len() / dimension;
     if n == 0 {
         return None;
     }
+    let projected: Vec<f32> = if dimension == 2 {
+        points.to_vec()
+    } else {
+        points
+            .chunks_exact(dimension)
+            .flat_map(|p| [p[0], p[1]])
+            .collect()
+    };
 
     // Compute transform and project all points.
-    let transform = Transform::fit(points, size as f32, size as f32, MARGIN)?;
-    let pixels: Vec<(f32, f32)> = points
+    let transform = Transform::fit(&projected, size as f32, size as f32, MARGIN)?;
+    let pixels: Vec<(f32, f32)> = projected
         .chunks_exact(2)
         .map(|p| transform.project(p[0], p[1]))
         .collect();

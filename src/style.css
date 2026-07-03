@@ -702,6 +702,54 @@ a.decompositions-iconbtn {
     cursor: pointer;
 }
 
+/* Three-part segmented toggle used for the Dimension picker (and any other
+   small "one of N" choice that reads better inline than as a select). One
+   outer border, per-button dividers, an active pill filled with the ink
+   color so the current selection reads as strong ground truth without
+   using an accent hue. */
+.decompositions-toggle {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--ddx-line);
+    border-radius: 6px;
+    overflow: hidden;
+    background: transparent;
+}
+
+.decompositions-toggle-option {
+    font: inherit;
+    font-size: 0.83rem;
+    color: var(--ddx-muted);
+    background: transparent;
+    border: 0;
+    border-left: 1px solid var(--ddx-line);
+    padding: 0.35rem 0.75rem;
+    min-height: 1.9rem;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+.decompositions-toggle-option:first-child {
+    border-left: 0;
+}
+
+.decompositions-toggle-option:hover {
+    background: var(--ddx-hover);
+    color: var(--ddx-ink);
+}
+
+.decompositions-toggle-option:focus-visible {
+    outline: 2px solid var(--ddx-ink);
+    outline-offset: -2px;
+}
+
+.decompositions-toggle-option--active,
+.decompositions-toggle-option--active:hover {
+    background: var(--ddx-ink);
+    color: var(--ddx-bg);
+    cursor: default;
+}
+
 /* In-app "About t-SNE" overlay, animated in over the plot. */
 .decompositions-about-backdrop {
     position: absolute;

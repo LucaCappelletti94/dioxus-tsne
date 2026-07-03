@@ -98,13 +98,14 @@ impl Worker for DecompositionWorker {
                 );
             }
             WorkerRequest::ExportSvg {
+                dimension,
                 points,
                 colors,
                 markers,
                 highlight,
                 legend,
             } => {
-                let n = points.len() / 2;
+                let n = points.len() / dimension;
                 if n == 0 {
                     scope.respond(
                         id,
@@ -122,6 +123,7 @@ impl Worker for DecompositionWorker {
                 let export_scope = scope.clone();
                 let result = build_svg(
                     &points,
+                    dimension,
                     &colors,
                     &markers,
                     highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),

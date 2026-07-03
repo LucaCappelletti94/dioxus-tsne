@@ -58,7 +58,12 @@ pub struct TsneParams {
     pub early_exaggeration_epochs: usize,
     /// Send an embedding snapshot to the UI every this many epochs.
     pub snapshot_every: usize,
-    /// Row major `n_samples * 2` embedding to warm start the fit from,
+    /// Output embedding dimensionality, 2, 3, or 4. A 4-D embedding is
+    /// rendered as a rotatable 3-D projection (holding W in the plot spins
+    /// it in the ZW plane before dropping W to get the visible 3-vector).
+    #[serde(default = "default_dimension")]
+    pub dimension: usize,
+    /// Row major `n_samples * dimension` embedding to warm start the fit from,
     /// continuing a previous run instead of random initialization. When set,
     /// early exaggeration is disabled so the seeded layout is not re-shocked.
     #[serde(default)]
@@ -76,6 +81,11 @@ fn default_early_exaggeration_epochs() -> usize {
     250
 }
 
+/// Default output embedding dimensionality.
+fn default_dimension() -> usize {
+    2
+}
+
 impl Default for TsneParams {
     fn default() -> Self {
         Self {
@@ -86,6 +96,7 @@ impl Default for TsneParams {
             early_exaggeration: default_early_exaggeration(),
             early_exaggeration_epochs: default_early_exaggeration_epochs(),
             snapshot_every: 5,
+            dimension: default_dimension(),
             initial_embedding: None,
         }
     }
@@ -116,7 +127,7 @@ pub enum WorkerRequest {
         /// The decomposition to run on the parsed data, or `None` to only load.
         run: Option<DecompositionMethod>,
     },
-    /// Run a decomposition to two dimensions on the given matrix (already parsed
+    /// Run a decomposition on the given matrix (already parsed
     /// data, a warm start, or a resume after a pause).
     Decompose {
         /// Row major matrix, `n_samples * n_features` long.
@@ -130,7 +141,9 @@ pub enum WorkerRequest {
     },
     /// Render the current embedding as an SVG string for download.
     ExportSvg {
-        /// Row major embedding, `n_samples * 2` long.
+        /// Output dimensionality of the embedding, 2 or 3.
+        dimension: usize,
+        /// Row major `n_samples * dimension` embedding.
         points: Vec<f32>,
         /// Per-point CSS colors, or empty for uniform color.
         colors: Vec<String>,
@@ -175,7 +188,7 @@ pub enum WorkerResponse {
     Snapshot {
         /// Zero based epoch index the snapshot was taken at.
         epoch: usize,
-        /// Row major embedding, `n_samples * 2` long.
+        /// Row major `n_samples * dimension` embedding.
         embedding: Vec<f32>,
         /// Which optimization phase this epoch belongs to.
         phase: TsnePhase,
@@ -187,7 +200,7 @@ pub enum WorkerResponse {
     },
     /// The decomposition finished.
     Done {
-        /// Row major final embedding, `n_samples * 2` long.
+        /// Row major `n_samples * dimension` embedding.
         embedding: Vec<f32>,
         /// Final KL divergence of the t-SNE fit, a quality metric (lower is a
         /// better embedding).
