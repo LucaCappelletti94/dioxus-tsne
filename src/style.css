@@ -67,6 +67,15 @@
     cursor: crosshair;
 }
 
+/* 3-D and 4-D scatter: the whole canvas is an orbit / pan / zoom control,
+   selection is not available. `grab` reads as "grab and pull" the way ThreeJS
+   viewers and Blender do; the pointerdown handler pins `grabbing` inline for
+   the duration of the drag. */
+.decompositions-plot--orbit {
+    touch-action: none;
+    cursor: grab;
+}
+
 /* Actively dragging a point or the current selection: the same grabbing
    pointer image editors show when moving a marquee. Added at pointerdown by
    Rust code and removed at pointerup, so the cursor tracks the interaction

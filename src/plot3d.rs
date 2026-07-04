@@ -959,7 +959,13 @@ pub fn ScatterPlot3D(
             // Only one of the two scatters is mounted at a time, so there is
             // no duplicate-id conflict.
             id: "scatter-plot",
-            class: "decompositions-plot decompositions-plot--draggable",
+            class: {
+                let mut c = String::from("decompositions-plot decompositions-plot--orbit");
+                if drag().is_some() {
+                    c.push_str(" decompositions-plot--grabbing");
+                }
+                c
+            },
             width: "{buffer_width}",
             height: "{buffer_height}",
             onmounted: move |evt| {
@@ -987,6 +993,12 @@ pub fn ScatterPlot3D(
                     start_y: coords.y,
                     start_camera: camera(),
                 };
+                // Pin the cursor to `grabbing` inline before pointer capture
+                // for the same reason as the 2-D scatter (browsers freeze the
+                // visible cursor at capture start; a later CSS class change
+                // does not repaint). The inline override is cleared at
+                // pointerup so CSS resumes control.
+                let _ = canvas.style().set_property("cursor", "grabbing");
                 let _ = canvas.set_pointer_capture(pointer_id);
                 drag.set(Some(state));
                 evt.prevent_default();
@@ -1020,6 +1032,7 @@ pub fn ScatterPlot3D(
             onpointerup: move |evt| {
                 if let Some(state) = drag() {
                     if let Some(canvas) = canvas() {
+                        let _ = canvas.style().remove_property("cursor");
                         let _ = canvas.release_pointer_capture(state.pointer_id);
                     }
                     drag.set(None);
@@ -1029,6 +1042,7 @@ pub fn ScatterPlot3D(
             onpointercancel: move |evt| {
                 if let Some(state) = drag() {
                     if let Some(canvas) = canvas() {
+                        let _ = canvas.style().remove_property("cursor");
                         let _ = canvas.release_pointer_capture(state.pointer_id);
                     }
                     drag.set(None);
