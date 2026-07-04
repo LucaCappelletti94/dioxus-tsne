@@ -733,6 +733,63 @@ pub fn project_to_display(
     Some(out)
 }
 
+/// Converts a 2-D delta expressed in the current display projection back into
+/// a delta on the raw `embedding_dim`-wide row. The inverse of
+/// [`project_to_display`] restricted to the two projected axes: the third
+/// axis (view depth) is held at zero so the point does not slide in and out
+/// of the current camera view.
+///
+/// * 2-D embedding: pass-through.
+/// * 3-D embedding: applies the transpose of the 3-D rotation, spreading the
+///   display-space `(dx, dy)` across the raw `(x, y, z)` axes.
+/// * 4-D embedding: unrotates through the 3-D pipeline as above, then
+///   distributes the resulting `dz3` across the raw `(z, w)` pair through
+///   the inverse ZW rotation with `dw3 = 0`.
+///
+/// Returns a `[f32; 4]` of which only the first `embedding_dim` entries are
+/// meaningful; the callers already know the row width they hand back to the
+/// embedding, so a fixed-size buffer avoids one heap allocation per pointer
+/// move.
+pub fn unproject_display_delta(
+    dx_display: f32,
+    dy_display: f32,
+    embedding_dim: usize,
+    camera: Camera,
+) -> [f32; 4] {
+    let mut out = [0.0f32; 4];
+    match embedding_dim {
+        2 => {
+            out[0] = dx_display;
+            out[1] = dy_display;
+        }
+        3 | 4 => {
+            let rot3d = rotation_matrix(camera);
+            // `project_to_display` reads rows 0 and 1 of `rot3d` as the display
+            // basis (with the column-major indexing `rot3d[col * 4 + row]`).
+            // Its transpose therefore has those same rows as its first two
+            // columns, so unrotating `(dx, dy, 0)` back into the raw basis
+            // reduces to a pair of two-term dot products.
+            let dxr = rot3d[0] * dx_display + rot3d[1] * dy_display;
+            let dyr = rot3d[4] * dx_display + rot3d[5] * dy_display;
+            let dz3 = rot3d[8] * dx_display + rot3d[9] * dy_display;
+            out[0] = dxr;
+            out[1] = dyr;
+            if embedding_dim == 3 {
+                out[2] = dz3;
+            } else {
+                // Inverse ZW rotation with `dw3 = 0`. Matches the forward
+                // pipeline in `project_to_display` where `z3 = cw*z + sw*w`.
+                let cw = camera.rot_w.cos();
+                let sw = camera.rot_w.sin();
+                out[2] = cw * dz3;
+                out[3] = sw * dz3;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Parses `#rrggbb` (case-insensitive, leading `#` optional) into linear
 /// `[r, g, b]` in `[0, 1]`. Returns `None` for anything else.
 fn parse_hex_rgb(s: &str) -> Option<[f32; 3]> {

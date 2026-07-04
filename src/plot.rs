@@ -952,6 +952,9 @@ enum Interaction {
         pointer_id: i32,
         index: usize,
         transform: Transform,
+        /// Last data-space point the mouse hovered, used as the origin for
+        /// the next incremental `(dx, dy)` reported to `on_point_moved`.
+        last_data: (f32, f32),
     },
     /// Group drag: the pointer id and the last data-space point observed, used
     /// as the origin for the next incremental `(dx, dy)` translation reported
@@ -1025,8 +1028,10 @@ fn to_buffer(
 ///   Points fall back to circles when absent or of mismatched length.
 /// * `draggable` - when present and true, points can be dragged with the
 ///   pointer, each move reported through `on_point_moved` in data space.
-/// * `on_point_moved` - called with `(index, x, y)` data-space coordinates as a
-///   point is dragged. The owner applies the move to the embedding signal.
+/// * `on_point_moved` - called with `(index, dx, dy)` incremental data-space
+///   deltas as a point is dragged. The owner applies the delta to the raw
+///   embedding, translating through the current projection if the display
+///   is a lower-dimensional view of a higher-dim embedding.
 /// * `on_drag_start` - called with the grabbed point index when a drag begins,
 ///   before any move. The owner can pause a running computation here.
 /// * `on_drag_end` - called when a drag ends (pointer up or cancel). The owner
@@ -1257,10 +1262,12 @@ pub fn ScatterPlot(
                         }
                         evt.prevent_default();
                         let _ = canvas.set_pointer_capture(pointer_id);
+                        let start_data = transform.unproject(px, py);
                         interaction.set(Some(Interaction::Point {
                             pointer_id,
                             index,
                             transform,
+                            last_data: start_data,
                         }));
                         if let Some(handler) = on_drag_start {
                             handler.call(index);
@@ -1299,12 +1306,22 @@ pub fn ScatterPlot(
                 let location = evt.data().element_coordinates();
                 let ((px, py), _) = to_buffer(&canvas, location.x, location.y, width, height);
                 match current {
-                    Interaction::Point { index, transform, .. } => {
+                    Interaction::Point { pointer_id, index, transform, last_data } => {
                         let Some(handler) = on_point_moved else {
                             return;
                         };
-                        let (x, y) = transform.unproject(px, py);
-                        handler.call((index, x, y));
+                        let (nx, ny) = transform.unproject(px, py);
+                        let (dx, dy) = (nx - last_data.0, ny - last_data.1);
+                        if dx == 0.0 && dy == 0.0 {
+                            return;
+                        }
+                        interaction.set(Some(Interaction::Point {
+                            pointer_id,
+                            index,
+                            transform,
+                            last_data: (nx, ny),
+                        }));
+                        handler.call((index, dx, dy));
                     }
                     Interaction::Group { transform, last_data, pointer_id } => {
                         let Some(handler) = on_group_moved else {

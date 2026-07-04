@@ -15,7 +15,7 @@ use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest,
 use crate::plot::ScatterPlot;
 use crate::plot3d::{
     Camera, HeldAxes, KEY_ROT_PER_TICK, KEY_TICK_MS, RotationAxis, ScatterPlot3D,
-    project_to_display,
+    project_to_display, unproject_display_delta,
 };
 use crate::worker::DecompositionWorker;
 use dioxus::html::HasFileData;
@@ -2338,14 +2338,23 @@ fn DecompositionView(config: Decomposition) -> Element {
     // conditionals stay plain Rust (`.then`) rather than inline if/else.
     let plot_draggable = draggable.then(|| can_drag.into());
     let on_point_moved = draggable.then(|| {
-        EventHandler::new(move |(index, x, y): (usize, f32, f32)| {
+        EventHandler::new(move |(index, dx, dy): (usize, f32, f32)| {
+            // The plot hands back deltas in the current projection (2-D
+            // display space). Unrotate them into the raw embedding basis so a
+            // 3-D or 4-D fit dragged in its projected view moves along the
+            // right axes, not the first two of every row.
+            let Some(ed) = embedding_row_dim() else {
+                return;
+            };
+            let delta = unproject_display_delta(dx, dy, ed, camera());
             let mut embedding = embedding;
             embedding.with_mut(|current| {
                 if let Some(current) = current.as_mut()
-                    && 2 * index + 1 < current.len()
+                    && ed * (index + 1) <= current.len()
                 {
-                    current[2 * index] = x;
-                    current[2 * index + 1] = y;
+                    for axis in 0..ed {
+                        current[ed * index + axis] += delta[axis];
+                    }
                 }
             });
         })
@@ -2373,15 +2382,20 @@ fn DecompositionView(config: Decomposition) -> Element {
             if sel.is_empty() {
                 return;
             }
+            let Some(ed) = embedding_row_dim() else {
+                return;
+            };
+            let delta = unproject_display_delta(dx, dy, ed, camera());
             let mut embedding = embedding;
             embedding.with_mut(|current| {
                 let Some(current) = current.as_mut() else {
                     return;
                 };
                 for index in sel {
-                    if 2 * index + 1 < current.len() {
-                        current[2 * index] += dx;
-                        current[2 * index + 1] += dy;
+                    if ed * (index + 1) <= current.len() {
+                        for axis in 0..ed {
+                            current[ed * index + axis] += delta[axis];
+                        }
                     }
                 }
             });
