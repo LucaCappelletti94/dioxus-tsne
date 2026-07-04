@@ -1422,6 +1422,10 @@ pub fn ScatterPlot(
                     return;
                 };
                 if let Some(canvas) = canvas() {
+                    // Return cursor control to CSS. `remove_property` clears
+                    // the inline override installed at pointerdown so the
+                    // `--grabbing` / `--select-*` classes take back over.
+                    let _ = canvas.style().remove_property("cursor");
                     let _ = canvas.release_pointer_capture(current.pointer_id());
                 }
                 interaction.set(None);
