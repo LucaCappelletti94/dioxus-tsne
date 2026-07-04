@@ -1283,6 +1283,13 @@ pub fn ScatterPlot(
                         // drag the whole group. `on_group_moved` needs the last
                         // observed data-space point to compute the next delta.
                         evt.prevent_default();
+                        // Pin the cursor to `grabbing` inline BEFORE claiming
+                        // pointer capture. Browsers freeze the visible cursor
+                        // at whatever it was when capture starts, so a CSS
+                        // class change through Dioxus after the fact leaves the
+                        // pointer showing a crosshair until release. The inline
+                        // style is cleared at pointerup so CSS takes back over.
+                        let _ = canvas.style().set_property("cursor", "grabbing");
                         let _ = canvas.set_pointer_capture(pointer_id);
                         let (sx, sy) = transform.unproject(px, py);
                         interaction.set(Some(Interaction::Group {
@@ -1304,6 +1311,10 @@ pub fn ScatterPlot(
                             handler.call((Vec::new(), SelectionMode::Replace));
                         }
                         evt.prevent_default();
+                        // Same reasoning as the Group branch above: freeze the
+                        // cursor to `grabbing` inline before pointer capture,
+                        // otherwise the crosshair sticks for the drag.
+                        let _ = canvas.style().set_property("cursor", "grabbing");
                         let _ = canvas.set_pointer_capture(pointer_id);
                         let start_data = transform.unproject(px, py);
                         interaction.set(Some(Interaction::Point {
@@ -1460,6 +1471,7 @@ pub fn ScatterPlot(
                     return;
                 };
                 if let Some(canvas) = canvas() {
+                    let _ = canvas.style().remove_property("cursor");
                     let _ = canvas.release_pointer_capture(current.pointer_id());
                 }
                 interaction.set(None);
