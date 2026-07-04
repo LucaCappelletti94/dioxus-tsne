@@ -167,6 +167,18 @@ const FILL_ALPHA: f64 = 0.82;
 const PLOT_BACKGROUND_LIGHT: &str = "#ffffff";
 const PLOT_BACKGROUND_DARK: &str = "#0a0a0a";
 
+/// Color of points outside the active multi-point selection. Same shade as
+/// [`DIMMED_COLOR`] on purpose: selection and class focus both mute the
+/// unrelated points into the background so the ones the user cares about
+/// stand out.
+const UNSELECTED_COLOR: &str = "#d8d8d8";
+
+/// Rubber-band rectangle fill and stroke while a selection drag is in flight.
+/// A cool blue-tinted wash reads clearly against both the light and dark plot
+/// backgrounds without stepping on the warm-orange "manual edit" palette.
+const RECT_FILL: &str = "rgba(37, 99, 235, 0.12)";
+const RECT_STROKE: &str = "rgba(37, 99, 235, 0.75)";
+
 /// Whether the page prefers a dark color scheme, so canvas drawing (which CSS
 /// variables cannot reach) can match the theme. Cached: `draw` runs every frame
 /// and `matchMedia` is a needless DOM query to repeat at the frame rate. A theme
@@ -247,6 +259,8 @@ fn draw(
     colors: Option<&[String]>,
     markers: Option<&[Marker]>,
     highlight: Option<(&str, Marker)>,
+    selection_mask: Option<&[bool]>,
+    rect_overlay: Option<((f32, f32), (f32, f32))>,
     width: u32,
     height: u32,
     ratio: f64,
@@ -306,15 +320,19 @@ fn draw(
     // continuous scale is quantized for this very reason).
     let colors = colors.filter(|c| c.len() == n);
     let markers = markers.filter(|m| m.len() == n);
+    // Only honour a mask that matches the point count. A stale mask (indices
+    // from a smaller/larger embedding) is safer to ignore than to trust.
+    let selection_mask = selection_mask.filter(|m| m.len() == n);
     let mut batches: Vec<(&str, Marker, Vec<usize>)> = Vec::new();
     for index in 0..n {
         let base = colors.map_or(DEFAULT_COLOR, |c| c[index].as_str());
         let marker = markers.map_or(Marker::Circle, |m| m[index]);
-        // While a class is focused, every point outside it is greyed so the
-        // focused class stands out. A class is the (color, marker) pair, which
-        // is unique per category.
-        let color = match highlight {
-            Some((hc, hm)) if base != hc || marker != hm => DIMMED_COLOR,
+        // Selection wins over class focus: an active selection mutes every
+        // non-selected point regardless of any highlighted class. Inside the
+        // selection, class focus still applies.
+        let color = match (selection_mask, highlight) {
+            (Some(mask), _) if !mask[index] => UNSELECTED_COLOR,
+            (_, Some((hc, hm))) if base != hc || marker != hm => DIMMED_COLOR,
             _ => base,
         };
         match batches
@@ -326,9 +344,11 @@ fn draw(
         }
     }
 
-    // Draw the greyed points first so the focused class paints on top of them.
-    if highlight.is_some() {
-        batches.sort_by_key(|(color, _, _)| *color != DIMMED_COLOR);
+    // Draw the muted points first so the focused/selected ones paint on top of
+    // them. `UNSELECTED_COLOR` and `DIMMED_COLOR` are the same shade today, so
+    // this single ordering key handles both cases.
+    if selection_mask.is_some() || highlight.is_some() {
+        batches.sort_by_key(|(color, _, _)| *color != UNSELECTED_COLOR && *color != DIMMED_COLOR);
     }
 
     // Shaped markers look better but cost a path each, rectangles keep huge
@@ -362,6 +382,19 @@ fn draw(
             context.set_global_alpha(1.0);
             context.stroke();
         }
+    }
+
+    // Rubber-band selection rectangle painted on top of the points while the
+    // user drags. Translucent fill so the enclosed points stay visible, thin
+    // stroke so the edges are unmistakable.
+    if let Some(((x1, y1), (x2, y2))) = rect_overlay {
+        let (rx, ry) = (f64::from(x1.min(x2)), f64::from(y1.min(y2)));
+        let (rw, rh) = (f64::from((x2 - x1).abs()), f64::from((y2 - y1).abs()));
+        context.set_fill_style_str(RECT_FILL);
+        context.fill_rect(rx, ry, rw, rh);
+        context.set_stroke_style_str(RECT_STROKE);
+        context.set_line_width(1.0);
+        context.stroke_rect(rx, ry, rw, rh);
     }
 
     if let Some(entries) = legend {
@@ -492,7 +525,8 @@ pub(crate) fn snapshot_png(
     canvas.set_width((f64::from(size) * ratio).round() as u32);
     canvas.set_height((f64::from(size) * ratio).round() as u32);
     draw(
-        &canvas, points, colors, markers, highlight, size, size, ratio, None, false, legend,
+        &canvas, points, colors, markers, highlight, None, None, size, size, ratio, None, false,
+        legend,
     )?;
     canvas.to_data_url_with_type("image/png").ok()
 }
@@ -905,13 +939,55 @@ fn build_legend_svg(buf: &mut String, entries: &[LegendEntry], size: u32, unifor
     }
 }
 
-/// In-progress drag of a single point: the pointer that started it, the index
-/// of the dragged point and the transform frozen for the drag's duration.
+/// In-flight pointer gesture on the 2D scatter. Three shapes: dragging a
+/// single point, dragging the current multi-point selection as a group, or
+/// rubber-band selecting a fresh group of points. The transform captured at
+/// gesture start is reused for the gesture's duration so the mapping does not
+/// jump if the embedding animates underneath.
 #[derive(Clone, Copy)]
-struct DragState {
-    pointer_id: i32,
-    index: usize,
-    transform: Transform,
+enum Interaction {
+    /// Single-point drag: the pointer id that started it and the point index
+    /// grabbed. Reports moves via `on_point_moved`.
+    Point {
+        pointer_id: i32,
+        index: usize,
+        transform: Transform,
+    },
+    /// Group drag: the pointer id and the last data-space point observed, used
+    /// as the origin for the next incremental `(dx, dy)` translation reported
+    /// to `on_group_moved`. Indices come from the selection prop.
+    Group {
+        pointer_id: i32,
+        transform: Transform,
+        last_data: (f32, f32),
+    },
+    /// Rubber-band selection: the pointer id, and the start and current data-
+    /// space corners of the drag rectangle. On release the enclosed points
+    /// become the new selection (empty on a zero-area click).
+    RectSelect {
+        pointer_id: i32,
+        transform: Transform,
+        start_data: (f32, f32),
+        current_data: (f32, f32),
+    },
+}
+
+impl Interaction {
+    fn pointer_id(self) -> i32 {
+        match self {
+            Self::Point { pointer_id, .. }
+            | Self::Group { pointer_id, .. }
+            | Self::RectSelect { pointer_id, .. } => pointer_id,
+        }
+    }
+
+    fn transform(self) -> Transform {
+        match self {
+            Self::Point { transform, .. }
+            | Self::Group { transform, .. }
+            | Self::RectSelect { transform, .. } => transform,
+        }
+    }
 }
 
 /// Converts an element-relative CSS pixel into a canvas buffer pixel, also
@@ -970,6 +1046,20 @@ pub fn ScatterPlot(
     #[props(default = None)] on_point_moved: Option<EventHandler<(usize, f32, f32)>>,
     #[props(default = None)] on_drag_start: Option<EventHandler<usize>>,
     #[props(default = None)] on_drag_end: Option<EventHandler<()>>,
+    /// Currently-selected point indices, sorted and deduped. When present and
+    /// non-empty the plot mutes every non-selected point and lets the user
+    /// drag the group as one. Absent props turn multi-select off.
+    #[props(default = None)]
+    selection: Option<ReadSignal<Vec<usize>>>,
+    /// Called with a fresh sorted, deduped list of indices when the user
+    /// commits a rubber-band selection (or with an empty list to clear).
+    #[props(default = None)]
+    on_selection_changed: Option<EventHandler<Vec<usize>>>,
+    /// Called with `(dx, dy)` data-space deltas as the user drags the current
+    /// selection as a group. The owner applies the delta to every selected
+    /// point in the embedding signal.
+    #[props(default = None)]
+    on_group_moved: Option<EventHandler<(f32, f32)>>,
     #[props(default = 800)] width: u32,
     #[props(default = 600)] height: u32,
     #[props(default = None)] pixel_ratio: Option<f64>,
@@ -990,15 +1080,16 @@ pub fn ScatterPlot(
     let size = use_memo(use_reactive!(|(width, height)| (width, height)));
 
     let mut canvas = use_signal(|| None::<HtmlCanvasElement>);
-    let mut drag = use_signal(|| None::<DragState>);
+    let mut interaction = use_signal(|| None::<Interaction>);
     // The transform of the last draw, so pointer handlers hit-test and
     // unproject against what is on screen. A plain RefCell, not a signal, so
     // writing it from the draw effect cannot retrigger that effect.
     let last_transform = use_hook(|| Rc::new(RefCell::new(None::<Transform>)));
 
-    // Redraws when the canvas mounts or the embedding, coloring or drag
-    // changes. During a drag the frozen transform is reused so only the
-    // dragged point moves; clearing the drag refits once at release.
+    // Redraws when the canvas mounts or the embedding, coloring, selection or
+    // interaction changes. During any pointer gesture the transform captured
+    // at gesture start is reused so only the mutated points move; clearing the
+    // gesture refits once at release.
     let redraw_transform = last_transform.clone();
     use_effect(move || {
         // Read the size first so a resize is always a dependency, even before
@@ -1010,21 +1101,67 @@ pub fn ScatterPlot(
         let colors = colors.map(|c| c.read().clone()).unwrap_or_default();
         let markers = markers.map(|m| m.read().clone()).unwrap_or_default();
         let highlight = highlight.and_then(|h| h.read().clone());
-        let override_transform = drag().map(|state| state.transform);
+        let selection_indices = selection.map(|s| s.read().clone()).unwrap_or_default();
+        let current_interaction = interaction();
+        let override_transform = current_interaction.map(Interaction::transform);
+        // Grayscale non-selected points only when a selection exists AND the
+        // user is not actively rubber-banding a new one (during a rect drag
+        // every point should read at full color so the user can see what they
+        // are enclosing).
+        let rect_active = matches!(current_interaction, Some(Interaction::RectSelect { .. }));
+        let mask: Option<Vec<bool>> = if selection_indices.is_empty() || rect_active {
+            None
+        } else {
+            embedding.read().as_ref().map(|points| {
+                let n = points.len() / 2;
+                let mut mask = vec![false; n];
+                for &index in &selection_indices {
+                    if let Some(slot) = mask.get_mut(index) {
+                        *slot = true;
+                    }
+                }
+                mask
+            })
+        };
         let used = match embedding.read().as_ref() {
-            Some(points) => draw(
-                &canvas,
-                points,
-                colors.as_deref(),
-                markers.as_deref(),
-                highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
-                width,
-                height,
-                ratio,
-                override_transform,
-                true,
-                None,
-            ),
+            Some(points) => {
+                // Project the rect corners into pixel space at draw time so the
+                // overlay tracks any transform changes even while the user is
+                // holding the pointer down.
+                let rect_overlay = if let Some(Interaction::RectSelect {
+                    start_data,
+                    current_data,
+                    ..
+                }) = current_interaction
+                {
+                    let (sx, sy) = current_interaction
+                        .expect("matched Some above")
+                        .transform()
+                        .project(start_data.0, start_data.1);
+                    let (cx, cy) = current_interaction
+                        .expect("matched Some above")
+                        .transform()
+                        .project(current_data.0, current_data.1);
+                    Some(((sx, sy), (cx, cy)))
+                } else {
+                    None
+                };
+                draw(
+                    &canvas,
+                    points,
+                    colors.as_deref(),
+                    markers.as_deref(),
+                    highlight.as_ref().map(|(c, m)| (c.as_str(), *m)),
+                    mask.as_deref(),
+                    rect_overlay,
+                    width,
+                    height,
+                    ratio,
+                    override_transform,
+                    true,
+                    None,
+                )
+            }
             None => {
                 if let Some(context) = canvas
                     .get_context("2d")
@@ -1060,7 +1197,7 @@ pub fn ScatterPlot(
                 );
             },
             onpointerdown: move |evt| {
-                if !is_draggable() || on_point_moved.is_none() {
+                if !is_draggable() {
                     return;
                 }
                 let Some(canvas) = canvas() else {
@@ -1086,55 +1223,182 @@ pub fn ScatterPlot(
                         best = Some((index, distance));
                     }
                 }
-                let Some((index, _)) = best else {
-                    return;
-                };
                 drop(guard);
-                evt.prevent_default();
                 let pointer_id = evt.data().pointer_id();
-                let _ = canvas.set_pointer_capture(pointer_id);
-                drag.set(Some(DragState { pointer_id, index, transform }));
-                if let Some(handler) = on_drag_start {
-                    handler.call(index);
+                let current_selection = selection
+                    .as_ref()
+                    .map(|s| s.read().clone())
+                    .unwrap_or_default();
+                match best {
+                    Some((index, _)) if current_selection.binary_search(&index).is_ok() => {
+                        // Grabbed a point that is part of the current selection:
+                        // drag the whole group. `on_group_moved` needs the last
+                        // observed data-space point to compute the next delta.
+                        evt.prevent_default();
+                        let _ = canvas.set_pointer_capture(pointer_id);
+                        let (sx, sy) = transform.unproject(px, py);
+                        interaction.set(Some(Interaction::Group {
+                            pointer_id,
+                            transform,
+                            last_data: (sx, sy),
+                        }));
+                        if let Some(handler) = on_drag_start {
+                            handler.call(index);
+                        }
+                    }
+                    Some((index, _)) if on_point_moved.is_some() => {
+                        // Grabbed a point outside any selection: single drag,
+                        // and any existing selection is cleared so the user is
+                        // clearly in "move one point" mode.
+                        if !current_selection.is_empty()
+                            && let Some(handler) = on_selection_changed
+                        {
+                            handler.call(Vec::new());
+                        }
+                        evt.prevent_default();
+                        let _ = canvas.set_pointer_capture(pointer_id);
+                        interaction.set(Some(Interaction::Point {
+                            pointer_id,
+                            index,
+                            transform,
+                        }));
+                        if let Some(handler) = on_drag_start {
+                            handler.call(index);
+                        }
+                    }
+                    _ => {
+                        // Missed every point: only start a rubber-band drag if
+                        // the parent has wired a selection channel. Otherwise
+                        // there is nothing to receive the result, so bail so
+                        // the default click behaviour still fires.
+                        if on_selection_changed.is_none() {
+                            return;
+                        }
+                        evt.prevent_default();
+                        let _ = canvas.set_pointer_capture(pointer_id);
+                        let start_data = transform.unproject(px, py);
+                        interaction.set(Some(Interaction::RectSelect {
+                            pointer_id,
+                            transform,
+                            start_data,
+                            current_data: start_data,
+                        }));
+                    }
                 }
             },
             onpointermove: move |evt| {
-                let Some(state) = drag() else {
+                let Some(current) = interaction() else {
                     return;
                 };
-                if evt.data().pointer_id() != state.pointer_id {
+                if evt.data().pointer_id() != current.pointer_id() {
                     return;
                 }
-                let Some(handler) = on_point_moved else {
-                    return;
-                };
                 let Some(canvas) = canvas() else {
                     return;
                 };
                 let location = evt.data().element_coordinates();
                 let ((px, py), _) = to_buffer(&canvas, location.x, location.y, width, height);
-                let (x, y) = state.transform.unproject(px, py);
-                handler.call((state.index, x, y));
+                match current {
+                    Interaction::Point { index, transform, .. } => {
+                        let Some(handler) = on_point_moved else {
+                            return;
+                        };
+                        let (x, y) = transform.unproject(px, py);
+                        handler.call((index, x, y));
+                    }
+                    Interaction::Group { transform, last_data, pointer_id } => {
+                        let Some(handler) = on_group_moved else {
+                            return;
+                        };
+                        let (nx, ny) = transform.unproject(px, py);
+                        let (dx, dy) = (nx - last_data.0, ny - last_data.1);
+                        if dx == 0.0 && dy == 0.0 {
+                            return;
+                        }
+                        interaction.set(Some(Interaction::Group {
+                            pointer_id,
+                            transform,
+                            last_data: (nx, ny),
+                        }));
+                        handler.call((dx, dy));
+                    }
+                    Interaction::RectSelect { pointer_id, transform, start_data, .. } => {
+                        let current_data = transform.unproject(px, py);
+                        interaction.set(Some(Interaction::RectSelect {
+                            pointer_id,
+                            transform,
+                            start_data,
+                            current_data,
+                        }));
+                    }
+                }
             },
             onpointerup: move |_| {
-                if let Some(state) = drag() {
-                    if let Some(canvas) = canvas() {
-                        let _ = canvas.release_pointer_capture(state.pointer_id);
+                let Some(current) = interaction() else {
+                    return;
+                };
+                if let Some(canvas) = canvas() {
+                    let _ = canvas.release_pointer_capture(current.pointer_id());
+                }
+                interaction.set(None);
+                match current {
+                    Interaction::Point { .. } | Interaction::Group { .. } => {
+                        if let Some(handler) = on_drag_end {
+                            handler.call(());
+                        }
                     }
-                    drag.set(None);
-                    if let Some(handler) = on_drag_end {
-                        handler.call(());
+                    Interaction::RectSelect { start_data, current_data, .. } => {
+                        // A zero-area click on empty space clears the selection.
+                        // Anything else collects every point whose data-space
+                        // coordinates land inside the rectangle. `sort` keeps
+                        // the callback contract (sorted, deduped indices).
+                        let (x1, x2) = if start_data.0 <= current_data.0 {
+                            (start_data.0, current_data.0)
+                        } else {
+                            (current_data.0, start_data.0)
+                        };
+                        let (y1, y2) = if start_data.1 <= current_data.1 {
+                            (start_data.1, current_data.1)
+                        } else {
+                            (current_data.1, start_data.1)
+                        };
+                        let indices = embedding
+                            .read()
+                            .as_ref()
+                            .map(|points| {
+                                points
+                                    .chunks_exact(2)
+                                    .enumerate()
+                                    .filter(|(_, p)| {
+                                        p[0] >= x1 && p[0] <= x2 && p[1] >= y1 && p[1] <= y2
+                                    })
+                                    .map(|(i, _)| i)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        if let Some(handler) = on_selection_changed {
+                            handler.call(indices);
+                        }
                     }
                 }
             },
             onpointercancel: move |_| {
-                if let Some(state) = drag() {
-                    if let Some(canvas) = canvas() {
-                        let _ = canvas.release_pointer_capture(state.pointer_id);
+                let Some(current) = interaction() else {
+                    return;
+                };
+                if let Some(canvas) = canvas() {
+                    let _ = canvas.release_pointer_capture(current.pointer_id());
+                }
+                interaction.set(None);
+                match current {
+                    Interaction::Point { .. } | Interaction::Group { .. } => {
+                        if let Some(handler) = on_drag_end {
+                            handler.call(());
+                        }
                     }
-                    drag.set(None);
-                    if let Some(handler) = on_drag_end {
-                        handler.call(());
+                    Interaction::RectSelect { .. } => {
+                        // Cancel without a commit: leave the selection as it
+                        // was and do not fire `on_selection_changed`.
                     }
                 }
             },

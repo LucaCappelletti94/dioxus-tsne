@@ -1105,6 +1105,18 @@ fn DecompositionView(config: Decomposition) -> Element {
             embedding_modified.set(false);
         }
     });
+    // Current 2D rubber-band selection: sorted, deduped point indices. An
+    // empty vec means "no selection", which the plot renders with every point
+    // at full color and disables the group drag. Cleared automatically when
+    // the embedding is dropped (Clear or a new dataset). It survives a Play
+    // -> run cycle so the user can iteratively nudge the same group and let
+    // the optimizer catch up in between.
+    let mut selection = use_signal(Vec::<usize>::new);
+    use_effect(move || {
+        if embedding.read().is_none() && !selection.read().is_empty() {
+            selection.set(Vec::new());
+        }
+    });
 
     // The bridge owns the worker and must live across renders. It is held behind
     // a RefCell so the running worker can be orphaned and replaced by a fresh one
@@ -2230,7 +2242,14 @@ fn DecompositionView(config: Decomposition) -> Element {
             match key.as_str() {
                 "Escape" => {
                     keyboard.prevent_default();
-                    clear(());
+                    // Peel the manipulation state back one layer at a time so
+                    // Esc reads as "undo my last mode": drop the selection
+                    // before wiping the whole dataset when both are present.
+                    if !selection.read().is_empty() {
+                        selection.set(Vec::new());
+                    } else {
+                        clear(());
+                    }
                     return;
                 }
                 " " if dataset.read().is_some() => {
@@ -2333,6 +2352,41 @@ fn DecompositionView(config: Decomposition) -> Element {
     });
     let on_drag_start = draggable.then(|| EventHandler::new(on_drag_start));
     let on_drag_end = draggable.then(|| EventHandler::new(on_drag_end));
+    // Multi-point selection props, wired only when point dragging is enabled
+    // AND the current display is the 2D scatter. Higher dimensions go through
+    // ScatterPlot3D which does not accept selection props today.
+    let selection_enabled = draggable && display_dim() == 2;
+    let plot_selection = selection_enabled.then(|| selection.into());
+    let on_selection_changed = selection_enabled.then(|| {
+        EventHandler::new(move |mut indices: Vec<usize>| {
+            // Contract with the plot: keep indices sorted and deduped so the
+            // grayscale mask build is a straight `mask[i] = true` fill.
+            indices.sort_unstable();
+            indices.dedup();
+            let mut selection = selection;
+            selection.set(indices);
+        })
+    });
+    let on_group_moved = selection_enabled.then(|| {
+        EventHandler::new(move |(dx, dy): (f32, f32)| {
+            let sel = selection.read().clone();
+            if sel.is_empty() {
+                return;
+            }
+            let mut embedding = embedding;
+            embedding.with_mut(|current| {
+                let Some(current) = current.as_mut() else {
+                    return;
+                };
+                for index in sel {
+                    if 2 * index + 1 < current.len() {
+                        current[2 * index] += dx;
+                        current[2 * index + 1] += dy;
+                    }
+                }
+            });
+        })
+    });
 
     rsx! {
         div {
@@ -2414,6 +2468,9 @@ fn DecompositionView(config: Decomposition) -> Element {
                         on_point_moved,
                         on_drag_start,
                         on_drag_end,
+                        selection: plot_selection,
+                        on_selection_changed,
+                        on_group_moved,
                         width: viewport().0,
                         height: viewport().1,
                         pixel_ratio,
