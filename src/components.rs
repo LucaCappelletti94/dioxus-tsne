@@ -12,7 +12,7 @@ use std::rc::Rc;
 use crate::color::{ColorScale, Coloring, Marker, colorize};
 use crate::ingest::{Dataset, LabelColumn};
 use crate::messages::{DecompositionMethod, TsneParams, TsnePhase, WorkerRequest, WorkerResponse};
-use crate::plot::ScatterPlot;
+use crate::plot::{ScatterPlot, SelectionMode};
 use crate::plot3d::{
     Camera, HeldAxes, KEY_ROT_PER_TICK, KEY_TICK_MS, RotationAxis, ScatterPlot3D,
     project_to_display, unproject_display_delta,
@@ -1117,6 +1117,12 @@ fn DecompositionView(config: Decomposition) -> Element {
             selection.set(Vec::new());
         }
     });
+    // Live modifier state driving the plot cursor hint: `Add` while Shift is
+    // held, `Subtract` while Alt is held (Shift wins over Alt so `Shift+Alt`
+    // is unambiguous), `Replace` otherwise. Updated on every keydown/keyup
+    // and reset on window blur so a focus change never leaves the cursor
+    // stuck in an inflated state.
+    let mut select_mode_hint = use_signal(|| SelectionMode::Replace);
 
     // The bridge owns the worker and must live across renders. It is held behind
     // a RefCell so the running worker can be orphaned and replaced by a fresh one
@@ -2238,6 +2244,21 @@ fn DecompositionView(config: Decomposition) -> Element {
             let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
             };
+            // Keep the cursor hint synced with the current modifier state on
+            // every keydown, regardless of which key fired. Reading the flags
+            // off the event, rather than tracking Shift/Alt keydown/keyup
+            // separately, absorbs edge cases like a Shift press swallowed by
+            // the OS's dead-key handling.
+            let hint = if keyboard.shift_key() {
+                SelectionMode::Add
+            } else if keyboard.alt_key() {
+                SelectionMode::Subtract
+            } else {
+                SelectionMode::Replace
+            };
+            if select_mode_hint() != hint {
+                select_mode_hint.set(hint);
+            }
             let key = keyboard.key();
             match key.as_str() {
                 "Escape" => {
@@ -2291,6 +2312,18 @@ fn DecompositionView(config: Decomposition) -> Element {
             let Some(keyboard) = event.dyn_ref::<web_sys::KeyboardEvent>() else {
                 return;
             };
+            // Same rules as keydown, so releasing Shift/Alt drops back to
+            // Replace immediately.
+            let hint = if keyboard.shift_key() {
+                SelectionMode::Add
+            } else if keyboard.alt_key() {
+                SelectionMode::Subtract
+            } else {
+                SelectionMode::Replace
+            };
+            if select_mode_hint() != hint {
+                select_mode_hint.set(hint);
+            }
             let axis = match keyboard.code().as_str() {
                 "KeyX" => Some(RotationAxis::X),
                 "KeyY" => Some(RotationAxis::Y),
@@ -2309,8 +2342,10 @@ fn DecompositionView(config: Decomposition) -> Element {
         // on blur to keep the state in sync with what the fingers are
         // actually doing.
         let mut held_axes_blur = held_axes;
+        let mut select_mode_hint_blur = select_mode_hint;
         let blur = Closure::wrap(Box::new(move |_event: web_sys::Event| {
             held_axes_blur.set(HeldAxes::default());
+            select_mode_hint_blur.set(SelectionMode::Replace);
         }) as Box<dyn FnMut(web_sys::Event)>);
 
         if let Some(win) = web_sys::window() {
@@ -2367,13 +2402,46 @@ fn DecompositionView(config: Decomposition) -> Element {
     let selection_enabled = draggable && display_dim() == 2;
     let plot_selection = selection_enabled.then(|| selection.into());
     let on_selection_changed = selection_enabled.then(|| {
-        EventHandler::new(move |mut indices: Vec<usize>| {
+        EventHandler::new(move |(mut rect, mode): (Vec<usize>, SelectionMode)| {
             // Contract with the plot: keep indices sorted and deduped so the
             // grayscale mask build is a straight `mask[i] = true` fill.
-            indices.sort_unstable();
-            indices.dedup();
+            rect.sort_unstable();
+            rect.dedup();
             let mut selection = selection;
-            selection.set(indices);
+            let new_selection = match mode {
+                SelectionMode::Replace => rect,
+                SelectionMode::Add => {
+                    let current = selection.read().clone();
+                    let mut merged = current;
+                    merged.extend(rect);
+                    merged.sort_unstable();
+                    merged.dedup();
+                    merged
+                }
+                SelectionMode::Subtract => {
+                    // Sorted-difference walk: both inputs are sorted so we
+                    // trim in one linear pass without a hashset detour.
+                    let current = selection.read().clone();
+                    let mut out = Vec::with_capacity(current.len());
+                    let mut i = 0usize;
+                    let mut j = 0usize;
+                    while i < current.len() {
+                        match rect.get(j).copied() {
+                            Some(r) if r < current[i] => j += 1,
+                            Some(r) if r == current[i] => {
+                                i += 1;
+                                j += 1;
+                            }
+                            _ => {
+                                out.push(current[i]);
+                                i += 1;
+                            }
+                        }
+                    }
+                    out
+                }
+            };
+            selection.set(new_selection);
         })
     });
     let on_group_moved = selection_enabled.then(|| {
@@ -2485,6 +2553,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                         selection: plot_selection,
                         on_selection_changed,
                         on_group_moved,
+                        select_mode: selection_enabled.then(|| select_mode_hint.into()),
                         width: viewport().0,
                         height: viewport().1,
                         pixel_ratio,

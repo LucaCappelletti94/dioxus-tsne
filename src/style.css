@@ -60,11 +60,46 @@
 
 .decompositions-plot--draggable {
     touch-action: none;
-    cursor: grab;
+    /* Default 2-D scatter cursor: the selection crosshair, since the empty
+       space between points dominates the plot and the user is far more
+       likely to be rubber-banding than grabbing a specific point. Point and
+       group drags flip to grabbing through the JS-driven class below. */
+    cursor: crosshair;
 }
 
-.decompositions-plot--draggable:active {
+/* Actively dragging a point or the current selection: the same grabbing
+   pointer image editors show when moving a marquee. Added at pointerdown by
+   Rust code and removed at pointerup, so the cursor tracks the interaction
+   instead of the CSS `:active` heuristic (which cannot tell a rect drag from
+   a point drag). */
+.decompositions-plot--grabbing {
     cursor: grabbing;
+}
+
+/* Live during a rubber-band drag. Kept as crosshair so the cursor stays a
+   precision tool while the marquee is on screen; overrides the grabbing
+   class in class order. */
+.decompositions-plot--rect-selecting {
+    cursor: crosshair;
+}
+
+/* Shift held: additive selection. Custom SVG cursor with a green + badge in
+   the top-right corner of a black crosshair. Data URI so we do not ship an
+   extra asset. Fallback `crosshair` keeps the tool coherent if the browser
+   rejects the SVG cursor. */
+.decompositions-plot--select-add {
+    cursor:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><line x1='11' y1='2' x2='11' y2='20' stroke='%23000' stroke-width='1.5'/><line x1='2' y1='11' x2='20' y2='11' stroke='%23000' stroke-width='1.5'/><circle cx='18' cy='6' r='5' fill='white' stroke='%23000' stroke-width='1'/><line x1='18' y1='3' x2='18' y2='9' stroke='%2316a34a' stroke-width='2'/><line x1='15' y1='6' x2='21' y2='6' stroke='%2316a34a' stroke-width='2'/></svg>") 11 11,
+        crosshair;
+}
+
+/* Alt held: subtractive selection. Red minus badge, same anchor as the add
+   variant. Kept dim red rather than a full alarm color so the cursor reads
+   as a mode switch, not an error. */
+.decompositions-plot--select-subtract {
+    cursor:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'><line x1='11' y1='2' x2='11' y2='20' stroke='%23000' stroke-width='1.5'/><line x1='2' y1='11' x2='20' y2='11' stroke='%23000' stroke-width='1.5'/><circle cx='18' cy='6' r='5' fill='white' stroke='%23000' stroke-width='1'/><line x1='15' y1='6' x2='21' y2='6' stroke='%23dc2626' stroke-width='2'/></svg>") 11 11,
+        crosshair;
 }
 
 /* Top bar: brand/logo left, gear right, transparent over the plot. */

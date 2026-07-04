@@ -939,6 +939,21 @@ fn build_legend_svg(buf: &mut String, entries: &[LegendEntry], size: u32, unifor
     }
 }
 
+/// How a rubber-band drag composes its result with the current selection.
+/// Captured at pointerdown from the modifier keys held at that instant, so
+/// releasing the modifier mid-drag does not change the outcome (matches how
+/// image editors like Photoshop treat their marquee tool).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SelectionMode {
+    /// No modifier. The rect result replaces whatever was selected.
+    #[default]
+    Replace,
+    /// Shift held. The rect result is unioned with the current selection.
+    Add,
+    /// Alt held. The rect result is removed from the current selection.
+    Subtract,
+}
+
 /// In-flight pointer gesture on the 2D scatter. Three shapes: dragging a
 /// single point, dragging the current multi-point selection as a group, or
 /// rubber-band selecting a fresh group of points. The transform captured at
@@ -972,6 +987,7 @@ enum Interaction {
         transform: Transform,
         start_data: (f32, f32),
         current_data: (f32, f32),
+        mode: SelectionMode,
     },
 }
 
@@ -1059,12 +1075,19 @@ pub fn ScatterPlot(
     /// Called with a fresh sorted, deduped list of indices when the user
     /// commits a rubber-band selection (or with an empty list to clear).
     #[props(default = None)]
-    on_selection_changed: Option<EventHandler<Vec<usize>>>,
+    on_selection_changed: Option<EventHandler<(Vec<usize>, SelectionMode)>>,
     /// Called with `(dx, dy)` data-space deltas as the user drags the current
     /// selection as a group. The owner applies the delta to every selected
     /// point in the embedding signal.
     #[props(default = None)]
     on_group_moved: Option<EventHandler<(f32, f32)>>,
+    /// Live modifier hint the parent tracks from window keydown/keyup: `Add`
+    /// while Shift is held, `Subtract` while Alt is held, `Replace` otherwise.
+    /// Only drives the cursor styling on the canvas; the actual mode used by
+    /// a rubber-band drag is captured at pointerdown from the same event, so
+    /// the plot never desynchronizes if the parent misses a modifier change.
+    #[props(default = None)]
+    select_mode: Option<ReadSignal<SelectionMode>>,
     #[props(default = 800)] width: u32,
     #[props(default = 600)] height: u32,
     #[props(default = None)] pixel_ratio: Option<f64>,
@@ -1189,7 +1212,27 @@ pub fn ScatterPlot(
     rsx! {
         canvas {
             id: "scatter-plot",
-            class: if is_draggable() { "decompositions-plot decompositions-plot--draggable" } else { "decompositions-plot" },
+            class: {
+                let mut c = String::from("decompositions-plot");
+                if is_draggable() {
+                    c.push_str(" decompositions-plot--draggable");
+                    match interaction() {
+                        Some(Interaction::Point { .. } | Interaction::Group { .. }) => {
+                            c.push_str(" decompositions-plot--grabbing");
+                        }
+                        Some(Interaction::RectSelect { .. }) => {
+                            c.push_str(" decompositions-plot--rect-selecting");
+                        }
+                        None => {}
+                    }
+                    match select_mode.map(|m| m()).unwrap_or_default() {
+                        SelectionMode::Add => c.push_str(" decompositions-plot--select-add"),
+                        SelectionMode::Subtract => c.push_str(" decompositions-plot--select-subtract"),
+                        SelectionMode::Replace => {}
+                    }
+                }
+                c
+            },
             width: "{buffer_width}",
             height: "{buffer_height}",
             onmounted: move |evt| {
@@ -1258,7 +1301,7 @@ pub fn ScatterPlot(
                         if !current_selection.is_empty()
                             && let Some(handler) = on_selection_changed
                         {
-                            handler.call(Vec::new());
+                            handler.call((Vec::new(), SelectionMode::Replace));
                         }
                         evt.prevent_default();
                         let _ = canvas.set_pointer_capture(pointer_id);
@@ -1284,11 +1327,23 @@ pub fn ScatterPlot(
                         evt.prevent_default();
                         let _ = canvas.set_pointer_capture(pointer_id);
                         let start_data = transform.unproject(px, py);
+                        // Modifier state captured at pointerdown drives the
+                        // whole rectangle: shift wins over alt so that
+                        // shift+alt is unambiguous, and letting go of either
+                        // key mid-drag does not change the outcome.
+                        let mode = if evt.data().modifiers().shift() {
+                            SelectionMode::Add
+                        } else if evt.data().modifiers().alt() {
+                            SelectionMode::Subtract
+                        } else {
+                            SelectionMode::Replace
+                        };
                         interaction.set(Some(Interaction::RectSelect {
                             pointer_id,
                             transform,
                             start_data,
                             current_data: start_data,
+                            mode,
                         }));
                     }
                 }
@@ -1339,13 +1394,14 @@ pub fn ScatterPlot(
                         }));
                         handler.call((dx, dy));
                     }
-                    Interaction::RectSelect { pointer_id, transform, start_data, .. } => {
+                    Interaction::RectSelect { pointer_id, transform, start_data, mode, .. } => {
                         let current_data = transform.unproject(px, py);
                         interaction.set(Some(Interaction::RectSelect {
                             pointer_id,
                             transform,
                             start_data,
                             current_data,
+                            mode,
                         }));
                     }
                 }
@@ -1364,7 +1420,7 @@ pub fn ScatterPlot(
                             handler.call(());
                         }
                     }
-                    Interaction::RectSelect { start_data, current_data, .. } => {
+                    Interaction::RectSelect { start_data, current_data, mode, .. } => {
                         // A zero-area click on empty space clears the selection.
                         // Anything else collects every point whose data-space
                         // coordinates land inside the rectangle. `sort` keeps
@@ -1394,7 +1450,7 @@ pub fn ScatterPlot(
                             })
                             .unwrap_or_default();
                         if let Some(handler) = on_selection_changed {
-                            handler.call(indices);
+                            handler.call((indices, mode));
                         }
                     }
                 }
