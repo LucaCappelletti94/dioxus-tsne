@@ -3565,7 +3565,7 @@ fn DecompositionView(config: Decomposition) -> Element {
                                     }
                                     div { class: "decompositions-shortcut",
                                         dt { kbd { "Esc" } }
-                                        dd { "Clear the loaded dataset and drop back to the drop zone." }
+                                        dd { "Clear the current multi-point selection if one is up. With no selection, drop the loaded dataset and go back to the drop zone." }
                                     }
                                 }
                                 h3 { "Display dimensionality" }
@@ -3616,11 +3616,53 @@ fn DecompositionView(config: Decomposition) -> Element {
                                         dd { "4-D rotation in the ZW plane. Only visibly changes anything when the current embedding is 4-D." }
                                     }
                                 }
-                                h3 { "Pointer and wheel" }
+                                h3 { "Pointer in the 2-D scatter" }
                                 p {
-                                    "The 3-D scatter also responds to pointer gestures. The 2-D scatter "
-                                    "uses the pointer to grab and drag individual points instead, so these "
-                                    "gestures do not translate there."
+                                    "The 2-D scatter is a selection and hand-edit surface. Empty space "
+                                    "starts a rubber-band drag, points move individually, and the current "
+                                    "selection moves as a group. The cursor advertises the current mode: "
+                                    "crosshair for a fresh selection, a green plus for adding to the "
+                                    "selection, a red minus for removing, and the closed-hand grip while a "
+                                    "drag is in flight. Any hand edit switches the reminder on until the "
+                                    "optimizer catches up."
+                                }
+                                dl { class: "decompositions-shortcuts",
+                                    div { class: "decompositions-shortcut",
+                                        dt {
+                                            kbd { "Left" }
+                                            " drag"
+                                        }
+                                        dd { "On empty space, draw a rubber-band and replace the current selection with the points it encloses. On a point that is already selected, translate the whole selection together. On any other point, translate that one point." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt {
+                                            kbd { "Shift" }
+                                            " + "
+                                            kbd { "Left" }
+                                            " drag"
+                                        }
+                                        dd { "Add the points enclosed by the drag to the current selection." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt {
+                                            kbd { "Alt" }
+                                            " + "
+                                            kbd { "Left" }
+                                            " drag"
+                                        }
+                                        dd { "Remove the points enclosed by the drag from the current selection." }
+                                    }
+                                    div { class: "decompositions-shortcut",
+                                        dt { "Click on empty space" }
+                                        dd { "Clear the current selection so every point is colored again." }
+                                    }
+                                }
+                                h3 { "Pointer in the 3-D scatter" }
+                                p {
+                                    "The 3-D and 4-D scatters do not accept point selection or hand-editing. "
+                                    "The whole canvas is an orbit / pan / zoom control. The cursor stays the "
+                                    "open hand until a drag begins, then the closed hand while orbiting or "
+                                    "panning."
                                 }
                                 dl { class: "decompositions-shortcuts",
                                     div { class: "decompositions-shortcut",
