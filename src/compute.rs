@@ -423,7 +423,7 @@ mod tests {
 
         let first = first.into_inner().unwrap().expect("a snapshot streamed");
         let (mut min_x, mut max_x, mut min_y, mut max_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-        for p in seed.chunks_exact(2) {
+        for p in seed.as_chunks::<2>().0 {
             min_x = min_x.min(p[0]);
             max_x = max_x.max(p[0]);
             min_y = min_y.min(p[1]);
@@ -431,8 +431,10 @@ mod tests {
         }
         let diagonal = ((max_x - min_x).powi(2) + (max_y - min_y).powi(2)).sqrt();
         let mean_shift = seed
-            .chunks_exact(2)
-            .zip(first.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(first.as_chunks::<2>().0.iter())
             .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
             .sum::<f32>()
             / N as f32;

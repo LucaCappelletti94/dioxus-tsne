@@ -584,7 +584,7 @@ fn data_extent(points: &[f32]) -> f32 {
     let mut mean_y = 0.0f32;
     let mut mean_z = 0.0f32;
     let mut finite_count = 0usize;
-    for chunk in points.chunks_exact(3) {
+    for chunk in points.as_chunks::<3>().0 {
         if chunk[0].is_finite() && chunk[1].is_finite() && chunk[2].is_finite() {
             mean_x += chunk[0];
             mean_y += chunk[1];
@@ -611,9 +611,11 @@ fn data_extent(points: &[f32]) -> f32 {
     // finite point sits on the mean) disables the cutoff so the empty-span
     // path below still runs and yields the epsilon extent.
     let mut distances: Vec<f32> = points
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .filter(|c| c[0].is_finite() && c[1].is_finite() && c[2].is_finite())
-        .map(&dist_sq)
+        .map(|c| dist_sq(c))
         .collect();
     let median = distances.len() / 2;
     distances.select_nth_unstable_by(median, f32::total_cmp);
@@ -626,7 +628,7 @@ fn data_extent(points: &[f32]) -> f32 {
 
     let mut lo = [f32::INFINITY; 3];
     let mut hi = [f32::NEG_INFINITY; 3];
-    for chunk in points.chunks_exact(3) {
+    for chunk in points.as_chunks::<3>().0 {
         if !(chunk[0].is_finite() && chunk[1].is_finite() && chunk[2].is_finite()) {
             continue;
         }

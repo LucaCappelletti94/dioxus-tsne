@@ -64,7 +64,7 @@ impl Transform {
 
         // Center of mass.
         let (mut mean_x, mut mean_y) = (0.0f32, 0.0f32);
-        for point in points.chunks_exact(2) {
+        for point in points.as_chunks::<2>().0 {
             mean_x += point[0];
             mean_y += point[1];
         }
@@ -75,7 +75,7 @@ impl Transform {
         // Outlier cutoff at OUTLIER_FIT_FACTOR times the median distance. A zero
         // median (most points coincident) disables the cutoff.
         let threshold_sq = {
-            let mut distances: Vec<f32> = points.chunks_exact(2).map(&dist_sq).collect();
+            let mut distances: Vec<f32> = points.as_chunks::<2>().0.iter().map(|c| dist_sq(c)).collect();
             let median = n / 2;
             distances.select_nth_unstable_by(median, f32::total_cmp);
             let median_sq = distances[median];
@@ -90,7 +90,7 @@ impl Transform {
         let mut max_x = f32::MIN;
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
-        for point in points.chunks_exact(2) {
+        for point in points.as_chunks::<2>().0 {
             if dist_sq(point) <= threshold_sq {
                 min_x = min_x.min(point[0]);
                 max_x = max_x.max(point[0]);
@@ -140,7 +140,9 @@ impl Transform {
 fn project_to_viewport(points: &[f32], width: f32, height: f32, margin: f32) -> Vec<(f32, f32)> {
     match Transform::fit(points, width, height, margin) {
         Some(transform) => points
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|point| transform.project(point[0], point[1]))
             .collect(),
         None => Vec::new(),
@@ -304,7 +306,9 @@ fn draw(
     let transform = transform_override
         .or_else(|| Transform::fit(points, width as f32 - strip_w, height as f32, MARGIN))?;
     let pixels: Vec<(f32, f32)> = points
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|point| {
             let (x, y) = transform.project(point[0], point[1]);
             (x + strip_w, y)
@@ -570,7 +574,9 @@ pub(crate) fn build_svg(
     // Compute transform and project all points.
     let transform = Transform::fit(&projected, size as f32, size as f32, MARGIN)?;
     let pixels: Vec<(f32, f32)> = projected
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| transform.project(p[0], p[1]))
         .collect();
 
@@ -1264,7 +1270,7 @@ pub fn ScatterPlot(
                 // Pick the nearest point within roughly 8 on-screen pixels.
                 let threshold = 8.0 * scale;
                 let mut best: Option<(usize, f32)> = None;
-                for (index, point) in points.chunks_exact(2).enumerate() {
+                for (index, point) in points.as_chunks::<2>().0.iter().enumerate() {
                     let (qx, qy) = transform.project(point[0], point[1]);
                     let distance = ((qx - px).powi(2) + (qy - py).powi(2)).sqrt();
                     if distance <= threshold && best.is_none_or(|(_, b)| distance < b) {
@@ -1455,7 +1461,9 @@ pub fn ScatterPlot(
                             .as_ref()
                             .map(|points| {
                                 points
-                                    .chunks_exact(2)
+                                    .as_chunks::<2>()
+                                    .0
+                                    .iter()
                                     .enumerate()
                                     .filter(|(_, p)| {
                                         p[0] >= x1 && p[0] <= x2 && p[1] >= y1 && p[1] <= y2
@@ -1503,7 +1511,7 @@ mod tests {
     fn unproject_round_trips_project() {
         let points = [-250.0, 1000.0, 480.0, -900.0, 0.0, 30.0];
         let transform = Transform::fit(&points, 800.0, 600.0, 12.0).unwrap();
-        for point in points.chunks_exact(2) {
+        for point in points.as_chunks::<2>().0 {
             let (px, py) = transform.project(point[0], point[1]);
             let (x, y) = transform.unproject(px, py);
             assert!((x - point[0]).abs() < 1e-2, "x: {x} vs {}", point[0]);

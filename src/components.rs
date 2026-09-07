@@ -1937,9 +1937,9 @@ fn DecompositionView(config: Decomposition) -> Element {
             use arrow_schema::{DataType, Field, Schema};
 
             let x_array =
-                Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+                Float32Array::from(points.as_chunks::<2>().0.iter().map(|c| c[0]).collect::<Vec<_>>());
             let y_array =
-                Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+                Float32Array::from(points.as_chunks::<2>().0.iter().map(|c| c[1]).collect::<Vec<_>>());
 
             // Determine if a label column is active.
             let label_array: Option<StringArray> = if color_source() != "none" {
@@ -2042,9 +2042,9 @@ fn DecompositionView(config: Decomposition) -> Element {
             use arrow_schema::{DataType, Field, Schema};
 
             let x_array =
-                Float32Array::from(points.chunks_exact(2).map(|c| c[0]).collect::<Vec<_>>());
+                Float32Array::from(points.as_chunks::<2>().0.iter().map(|c| c[0]).collect::<Vec<_>>());
             let y_array =
-                Float32Array::from(points.chunks_exact(2).map(|c| c[1]).collect::<Vec<_>>());
+                Float32Array::from(points.as_chunks::<2>().0.iter().map(|c| c[1]).collect::<Vec<_>>());
 
             let label_array: Option<StringArray> = if color_source() != "none" {
                 let source = color_source();

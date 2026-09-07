@@ -144,7 +144,7 @@ fn tsne_warm_start_continues_from_seed() {
     // The seed bounding box diagonal sets the scale of the layout.
     let (mut min_x, mut max_x) = (f32::MAX, f32::MIN);
     let (mut min_y, mut max_y) = (f32::MAX, f32::MIN);
-    for point in seed.chunks_exact(2) {
+    for point in seed.as_chunks::<2>().0 {
         min_x = min_x.min(point[0]);
         max_x = max_x.max(point[0]);
         min_y = min_y.min(point[1]);
@@ -155,8 +155,10 @@ fn tsne_warm_start_continues_from_seed() {
     // The first continued snapshot stays within a small fraction of the seed:
     // warm start resumes the layout instead of scattering from noise.
     let mean_shift = seed
-        .chunks_exact(2)
-        .zip(first.chunks_exact(2))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(first.as_chunks::<2>().0.iter())
         .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt())
         .sum::<f32>()
         / N as f32;
