@@ -20,7 +20,7 @@ permissions:
 jobs:
   fmt:
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
 
   clippy:
     name: clippy (wasm32)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +47,7 @@ jobs:
 
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@stable
@@ -65,7 +65,7 @@ jobs:
     if: |
       github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [fmt, clippy, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # ~15-20 min cold (build-std + wasm-opt over the worker), well under this.
     timeout-minutes: 45
     concurrency:
